@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: vk-teams-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python3 bot.py"
