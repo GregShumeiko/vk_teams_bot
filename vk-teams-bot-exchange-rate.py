@@ -188,7 +188,7 @@ class CurrencyService:
                 # Курс Bidease
                 next_month = (current_date + timedelta(days=32)).replace(day=1)
                 bidease_msg = (
-                    f"🔮 Прогноз Bidease на {next_month.strftime('%B %Y')}:\n"
+                    f"🔮 Курс Bidease на {next_month.strftime('%B %Y')}:\n"
                     f"🔹 {round(current_rate * 1.06, 4):.4f} ₽\n"
                     f"🔸 На основе: {current_rate:.4f} ₽ × 1.06"
                 )
@@ -198,7 +198,7 @@ class CurrencyService:
                 stats = self.calculate_monthly_stats(current_date.year, current_date.month)
                 if stats:
                     avg_msg = (
-                        f"📊 Средний курс за {current_date.strftime('%B %Y')}:\n"
+                        f"📊 Средневзвешенный курс за {current_date.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
                         f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
