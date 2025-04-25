@@ -3,4 +3,4 @@ services:
     name: vk-teams-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python test.py
