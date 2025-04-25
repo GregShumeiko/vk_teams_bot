@@ -1,12 +1,7 @@
 services:
-  - type: background
-    name: vk-teams-bot
+  - type: web
+    name: vk_teams_bot
     env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    envVars:
-      - key: TOKEN
-        value: 002.1881976940.2477662618:1000005422
-      - key: CHAT_ID
-        value: testbot2
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    autoDeploy: true
