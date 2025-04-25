@@ -47,7 +47,6 @@ class CurrencyService:
     def get_rate(self, date: datetime) -> Optional[float]:
         """Получаем курс USD с кешированием"""
         try:
-            # Проверяем кеш
             if date.date() in self.rate_cache:
                 return self.rate_cache[date.date()]
                 
@@ -74,13 +73,18 @@ class CurrencyService:
             return None
 
     def get_previous_workday_rate(self, date: datetime) -> Optional[float]:
-        """Эффективный поиск предыдущего рабочего дня"""
-        for delta in range(1, 8):  # Проверяем не более 7 дней назад
+        """Ищет курс за предыдущий рабочий день (не пропуская выходные)"""
+        prev_date = date - timedelta(days=1)
+        
+        # Если предыдущий день - выходной, берем курс за этот день (как делает ЦБ)
+        if prev_date.weekday() >= 5:
+            rate = self.get_rate(prev_date)
+            if rate is not None:
+                return rate
+        
+        # Стандартный поиск предыдущего рабочего дня
+        for delta in range(1, 8):
             prev_date = date - timedelta(days=delta)
-            if prev_date.weekday() >= 5:  # Пропускаем выходные
-                continue
-                
-            # Проверяем кеш
             if prev_date.date() in self.rate_cache:
                 return self.rate_cache[prev_date.date()]
                 
@@ -90,92 +94,81 @@ class CurrencyService:
         return None
 
     def get_rate_with_change(self, date: datetime) -> Tuple[Optional[float], Optional[float]]:
-        """Получаем курс и изменение с оптимизированными запросами"""
+        """Получаем курс и изменение"""
         current_rate = self.get_rate(date)
         if current_rate is None:
             return None, None
             
         prev_rate = self.get_previous_workday_rate(date)
-        # Исправленный расчет: текущий курс минус предыдущий
+        # Правильный расчет: текущий минус предыдущий
         change = (current_rate - prev_rate) if prev_rate is not None else None
         
         return current_rate, change
 
     def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Оптимизированный расчет статистики за месяц"""
+        """Статистика за месяц"""
         if year < MIN_YEAR:
-            logger.warning(f"Запрошен год {year} (минимум {MIN_YEAR})")
             return None
             
         last_day = calendar.monthrange(year, month)[1]
         rates = []
-        current_rate = None
         
-        # Сначала пробуем получить все доступные курсы за месяц
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
             rate = self.get_rate(date)
             if rate is not None:
                 rates.append(rate)
         
-        # Если данных нет, используем стратегию заполнения пропусков
         if not rates:
             return None
             
-        last_rate = rates[-1]
-        avg_rate = round(sum(rates) / len(rates), 4)
-        
         return {
-            "last_rate": last_rate,
-            "avg_rate": avg_rate,
+            "last_rate": rates[-1],
+            "avg_rate": round(sum(rates) / len(rates), 4),
             "days_count": len(rates)
         }
 
     def send_to_chat(self, text: str) -> bool:
-        """Отправляет сообщение в чат"""
+        """Отправка сообщения"""
         try:
             response = self.http_client.get(
                 "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
                 params={"token": TOKEN, "chatId": CHAT_ID, "text": text}
             )
             if response.status_code == 200:
-                logger.info("Сообщение успешно отправлено")
+                logger.info("Сообщение отправлено")
                 return True
-            logger.error(f"Ошибка отправки: {response.text}")
+            logger.error(f"Ошибка: {response.text}")
             return False
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {str(e)}")
+            logger.error(f"Ошибка отправки: {str(e)}")
             return False
 
     def format_change(self, change: float) -> str:
-        """Форматирует изменение курса с эмодзи"""
+        """Форматирование изменения"""
         if change is None:
             return "🔄 Нет данных"
         if change > 0:
             return f"📈 +{change:.4f}"  # Курс вырос
         elif change < 0:
-            return f"📉 {change:.4f}"   # Курс упал (знак уже в числе)
+            return f"📉 {change:.4f}"   # Курс упал
         return "➡️ 0.0000"
 
     def send_daily_report(self) -> bool:
-        """Формирует и отправляет ежедневный отчет"""
+        """Ежедневный отчет"""
         try:
-            logger.info("Начало формирования отчета")
-            
-            # Получаем текущий курс и изменение
             current_rate, change = self.get_rate_with_change(datetime.now())
             if current_rate is None:
-                raise ValueError("Не удалось получить текущий курс")
+                raise ValueError("Не удалось получить курс")
             
             current_date = datetime.now()
             date_str = current_date.strftime("%d.%m.%Y")
 
             # Основное сообщение
-            change_str = self.format_change(change)
             message = (
                 f"💵 Курс USD на {date_str}:\n"
                 f"🔹 {current_rate:.4f} ₽\n"
-                f"🔸 Изменение: {change_str}"
+                f"🔸 Изменение: {self.format_change(change)}"
             )
             
             if not self.send_to_chat(message):
@@ -185,7 +178,7 @@ class CurrencyService:
             if current_date.day == calendar.monthrange(current_date.year, current_date.month)[1]:
                 logger.info("Отправка дополнительных отчетов за месяц")
                 
-                # Курс Bidease
+                # Прогноз Bidease (добавлен обратно)
                 next_month = (current_date + timedelta(days=32)).replace(day=1)
                 bidease_msg = (
                     f"🔮 Курс Bidease на {next_month.strftime('%B %Y')}:\n"
@@ -210,16 +203,15 @@ class CurrencyService:
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка формирования отчета: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка отчета: {str(e)}")
             return False
 
-# Инициализация сервиса
 currency_service = CurrencyService()
 
 def run_scheduler():
-    """Запускает планировщик задач"""
-    schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 05:00 UTC = 08:00 МСК
-    currency_service.send_daily_report()  # Первая отправка при запуске
+    """Планировщик задач"""
+    schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
+    currency_service.send_daily_report()  # Первый запуск
     
     while True:
         schedule.run_pending()
@@ -247,7 +239,6 @@ def health_check():
         "cache_size": len(currency_service.rate_cache)
     })
 
-# Запуск фоновых задач
 threading.Thread(target=run_scheduler, daemon=True).start()
 
 if __name__ == '__main__':
