@@ -25,6 +25,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 BASE_CBR_URL = "https://www.cbr-xml-daily.ru"
 DAILY_URL = f"{BASE_CBR_URL}/daily_json.js"
 ARCHIVE_URL = f"{BASE_CBR_URL}/archive/{{year}}/{{month:02d}}/{{day:02d}}/daily_json.js"
+MIN_YEAR = 2025  # Минимальный год для поиска в архиве
 
 class CurrencyService:
     def __init__(self):
@@ -38,6 +39,9 @@ class CurrencyService:
             if date.date() == datetime.now().date():
                 response = httpx.get(DAILY_URL, timeout=10)
             else:
+                if date.year < MIN_YEAR:
+                    return None
+                
                 url = ARCHIVE_URL.format(
                     year=date.year,
                     month=date.month,
@@ -53,19 +57,23 @@ class CurrencyService:
             return None
 
     def get_last_available_rate(self, date: datetime) -> Optional[float]:
-        """Рекурсивно ищет последний доступный курс"""
+        """Рекурсивно ищет последний доступный курс (не ранее 2025 года)"""
+        if date.year < MIN_YEAR:
+            return None
+            
         rate = self.get_rate(date)
         if rate is not None:
             return rate
         
         prev_date = date - timedelta(days=1)
-        if prev_date.year < 2000:  # ЦБ ведет архив с ~1997 года
-            return None
-            
         return self.get_last_available_rate(prev_date)
 
     def calculate_monthly_stats(self, year: int, month: int) -> Dict:
         """Рассчитывает статистику за месяц"""
+        if year < MIN_YEAR:
+            logger.warning(f"Запрошен год {year} (минимум {MIN_YEAR})")
+            return None
+            
         last_day = calendar.monthrange(year, month)[1]
         rates = []
         current_rate = None
@@ -192,7 +200,8 @@ def health_check():
         "last_successful_send": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None,
         "last_rate": currency_service.last_rate,
         "is_last_day_of_month": calendar.monthrange(datetime.now().year, datetime.now().month)[1] == datetime.now().day,
-        "next_run": str(schedule.next_run())
+        "next_run": str(schedule.next_run()),
+        "min_year": MIN_YEAR
     })
 
 # Запуск фоновых задач
