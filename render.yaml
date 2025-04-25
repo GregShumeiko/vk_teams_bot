@@ -1,7 +1,12 @@
 services:
-  - type: worker
+  - type: web
     name: vk-teams-bot
-    env: python
+    runtime: python
     plan: free
-    buildCommand: ""
-    startCommand: "python3 bot.py"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 main.py
+    envVars:
+      - key: TOKEN
+        value: 002.1881976940.2477662618:1000005422
+      - key: CHAT_ID
+        value: testbot2
