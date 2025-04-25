@@ -1,7 +1,6 @@
 services:
-  - type: worker
+  - type: web
     name: vk-teams-bot
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
-    schedule: "19 30 * * *"  # Каждый день в 05:00 UTC (08:00 МСК)
