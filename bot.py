@@ -50,7 +50,7 @@ def send_exchange_rate():
         print(f"Произошла ошибка: {e}")
 
 # Планируем выполнение функции каждый день в 8:00 утра
-schedule.every().day.at("17:56").do(send_exchange_rate)
+schedule.every().day.at("18:02").do(send_exchange_rate)
 
 # Бесконечный цикл для выполнения запланированных задач
 while True:
