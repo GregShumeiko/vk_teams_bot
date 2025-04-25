@@ -1,3 +1,4 @@
 flask
 httpx
 schedule
+python-dotenv
