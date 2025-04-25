@@ -1,58 +1,58 @@
 import httpx
 from datetime import datetime
 import logging
-import schedule
-import time
-
-# Устанавливаем уровень логирования для httpx
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
 import os
+import time
+import schedule
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Конфигурация из переменных окружения
 TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID", "testbot2")  # Замените на нужный chatId
+CHAT_ID = os.getenv("CHAT_ID")
 URL_CBR = "https://www.cbr-xml-daily.ru/daily_json.js"
 
 def send_exchange_rate():
     try:
-        # Получаем курс валют с сайта ЦБ РФ
+        logger.info("Начало отправки курса валют")
+        
+        # Получаем данные от ЦБ
         response = httpx.get(URL_CBR)
         response.raise_for_status()
         data = response.json()
 
+        # Извлекаем нужные данные
         usd = data["Valute"]["USD"]["Value"]
         eur = data["Valute"]["EUR"]["Value"]
-
-        # Парсим дату из ответа
-        cbr_date_raw = data["Date"]
-        cbr_date = datetime.fromisoformat(cbr_date_raw).strftime("%d.%m.%Y")
+        date = datetime.fromisoformat(data["Date"]).strftime("%d.%m.%Y")
 
         # Формируем сообщение
-        message = f"Курс валют на {cbr_date}:\nUSD: {usd:.4f} ₽\nEUR: {eur:.4f} ₽"
+        message = f"Курс валют на {date}:\nUSD: {usd:.2f} ₽\nEUR: {eur:.2f} ₽"
+        logger.info(f"Сформировано сообщение: {message}")
 
-        # Отправляем сообщение в VK Teams
+        # Отправляем в VK Teams
         send_response = httpx.get(
             "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
-            params={
-                "token": TOKEN,
-                "chatId": CHAT_ID,
-                "text": message
-            }
+            params={"token": TOKEN, "chatId": CHAT_ID, "text": message}
         )
-
+        
         if send_response.status_code == 200:
-            print("Сообщение успешно отправлено!")
+            logger.info("Сообщение успешно отправлено!")
         else:
-            print("Ошибка при отправке сообщения:", send_response.text)
+            logger.error(f"Ошибка отправки: {send_response.text}")
 
-    except httpx.RequestError as e:
-        print(f"Ошибка при выполнении запроса: {e}")
     except Exception as e:
-        print(f"Произошла ошибка: {e}")
+        logger.error(f"Ошибка: {str(e)}", exc_info=True)
 
-# Планируем выполнение функции каждый день в 8:00 утра
-schedule.every().day.at("18:02").do(send_exchange_rate)
+# Настройка расписания
+schedule.every().day.at("05:00").do(send_exchange_rate)  # 05:00 UTC = 08:00 МСК
 
-# Бесконечный цикл для выполнения запланированных задач
-while True:
-    schedule.run_pending()
-    time.sleep(60)
+if __name__ == "__main__":
+    logger.info("Сервис запущен")
+    send_exchange_rate()  # Первая отправка при запуске
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
