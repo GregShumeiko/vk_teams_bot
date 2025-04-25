@@ -8,14 +8,18 @@ import time
 import schedule
 import socket
 import calendar
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
 app = Flask(__name__)
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('currency_service.log')
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -25,50 +29,61 @@ CHAT_ID = os.getenv("CHAT_ID")
 BASE_CBR_URL = "https://www.cbr-xml-daily.ru"
 DAILY_URL = f"{BASE_CBR_URL}/daily_json.js"
 ARCHIVE_URL = f"{BASE_CBR_URL}/archive/{{year}}/{{month:02d}}/{{day:02d}}/daily_json.js"
-MIN_YEAR = 2025  # Минимальный год для поиска в архиве
+MIN_YEAR = 2025
 
 class CurrencyService:
     def __init__(self):
         self.last_rate: Optional[float] = None
         self.last_successful_send: Optional[datetime] = None
         self.start_time = datetime.now()
+        self.http_client = httpx.Client(timeout=30.0)
+        self.previous_rate: Optional[float] = None
 
-    def get_rate(self, date: datetime) -> Optional[float]:
-        """Получаем курс USD на текущую дату"""
+    def __del__(self):
+        self.http_client.close()
+
+    def get_rate_with_change(self, date: datetime) -> Tuple[Optional[float], Optional[float]]:
+        """Получаем курс USD и изменение от предыдущего дня"""
         try:
             if date.date() == datetime.now().date():
-                response = httpx.get(DAILY_URL, timeout=10)
+                response = self.http_client.get(DAILY_URL)
             else:
                 if date.year < MIN_YEAR:
-                    return None
+                    return None, None
                 
                 url = ARCHIVE_URL.format(
                     year=date.year,
                     month=date.month,
                     day=date.day
                 )
-                response = httpx.get(url, timeout=10)
+                response = self.http_client.get(url)
             
             if response.status_code == 200:
-                return response.json()["Valute"]["USD"]["Value"]
-            return None
+                current_rate = round(response.json()["Valute"]["USD"]["Value"], 4)
+                
+                # Получаем предыдущий рабочий день
+                prev_date = date - timedelta(days=1)
+                prev_rate = self.get_last_available_rate(prev_date)
+                
+                return current_rate, (current_rate - prev_rate) if prev_rate else None
+            return None, None
         except Exception as e:
-            logger.error(f"Ошибка получения курса на {date.strftime('%d.%m.%Y')}: {str(e)}")
-            return None
+            logger.error(f"Ошибка получения курса: {str(e)}")
+            return None, None
 
     def get_last_available_rate(self, date: datetime) -> Optional[float]:
-        """Рекурсивно ищет последний доступный курс (не ранее 2025 года)"""
+        """Рекурсивно ищет последний доступный курс"""
         if date.year < MIN_YEAR:
             return None
             
-        rate = self.get_rate(date)
+        rate, _ = self.get_rate_with_change(date)
         if rate is not None:
             return rate
         
         prev_date = date - timedelta(days=1)
         return self.get_last_available_rate(prev_date)
 
-    def calculate_monthly_stats(self, year: int, month: int) -> Dict:
+    def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
         """Рассчитывает статистику за месяц"""
         if year < MIN_YEAR:
             logger.warning(f"Запрошен год {year} (минимум {MIN_YEAR})")
@@ -78,27 +93,25 @@ class CurrencyService:
         rates = []
         current_rate = None
         
-        # Собираем курсы за месяц с заполнением пропусков
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
-            rate = self.get_rate(date)
+            rate, _ = self.get_rate_with_change(date)
             
             if rate is not None:
                 current_rate = rate
             elif current_rate is None:
-                # Для первых дней месяца ищем в предыдущих месяцах
                 current_rate = self.get_last_available_rate(date - timedelta(days=1))
                 if current_rate is None:
                     continue
             
             rates.append(current_rate)
-            logger.debug(f"{date.strftime('%d.%m.%Y')}: {current_rate:.2f} ₽")
+            logger.debug(f"{date.strftime('%d.%m.%Y')}: {current_rate:.4f} ₽")
         
         if not rates:
             return None
             
         last_rate = rates[-1]
-        avg_rate = sum(rates) / len(rates)
+        avg_rate = round(sum(rates) / len(rates), 4)
         
         return {
             "last_rate": last_rate,
@@ -109,12 +122,12 @@ class CurrencyService:
     def send_to_chat(self, text: str) -> bool:
         """Отправляет сообщение в чат"""
         try:
-            response = httpx.get(
+            response = self.http_client.get(
                 "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
-                params={"token": TOKEN, "chatId": CHAT_ID, "text": text},
-                timeout=10
+                params={"token": TOKEN, "chatId": CHAT_ID, "text": text}
             )
             if response.status_code == 200:
+                logger.info("Сообщение успешно отправлено")
                 return True
             logger.error(f"Ошибка отправки: {response.text}")
             return False
@@ -122,23 +135,35 @@ class CurrencyService:
             logger.error(f"Ошибка отправки сообщения: {str(e)}")
             return False
 
+    def format_change(self, change: float) -> str:
+        """Форматирует изменение курса с эмодзи"""
+        if change > 0:
+            return f"📈 +{abs(change):.4f}"
+        elif change < 0:
+            return f"📉 -{abs(change):.4f}"
+        return "➡️ 0.0000"
+
     def send_daily_report(self) -> bool:
         """Формирует и отправляет ежедневный отчет"""
         try:
-            logger.info("Формирование отчета о курсе валют")
+            logger.info("Начало формирования отчета")
             
-            # Получаем текущий курс
-            response = httpx.get(DAILY_URL, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            # Получаем текущий курс и изменение
+            current_rate, change = self.get_rate_with_change(datetime.now())
+            if current_rate is None:
+                raise ValueError("Не удалось получить текущий курс")
             
-            usd = data["Valute"]["USD"]["Value"]
-            eur = data["Valute"]["EUR"]["Value"]
-            current_date = datetime.fromisoformat(data["Date"])
+            current_date = datetime.now()
             date_str = current_date.strftime("%d.%m.%Y")
 
             # Основное сообщение
-            message = f"Курс валют на {date_str}:\nUSD: {usd:.2f} ₽\nEUR: {eur:.2f} ₽"
+            change_str = self.format_change(change) if change is not None else "🔄 Нет данных"
+            message = (
+                f"💵 Курс USD на {date_str}:\n"
+                f"🔹 {current_rate:.4f} ₽\n"
+                f"🔸 Изменение: {change_str}"
+            )
+            
             if not self.send_to_chat(message):
                 return False
 
@@ -149,8 +174,9 @@ class CurrencyService:
                 # Курс Bidease
                 next_month = (current_date + timedelta(days=32)).replace(day=1)
                 bidease_msg = (
-                    f"Курс Bidease на {next_month.strftime('%B %Y')}:\n"
-                    f"{usd * 1.06:.2f} ₽ (рассчитано как {usd:.2f} * 1.06)"
+                    f"🔮 Прогноз Bidease на {next_month.strftime('%B %Y')}:\n"
+                    f"🔹 {round(current_rate * 1.06, 4):.4f} ₽\n"
+                    f"🔸 На основе: {current_rate:.4f} ₽ × 1.06"
                 )
                 self.send_to_chat(bidease_msg)
 
@@ -158,13 +184,15 @@ class CurrencyService:
                 stats = self.calculate_monthly_stats(current_date.year, current_date.month)
                 if stats:
                     avg_msg = (
-                        f"Средневзвешенный курс USD за {current_date.strftime('%B %Y')}:\n"
-                        f"{stats['avg_rate']:.2f} ₽ (по {stats['days_count']} дням)"
+                        f"📊 Средний курс за {current_date.strftime('%B %Y')}:\n"
+                        f"🔹 {stats['avg_rate']:.4f} ₽\n"
+                        f"🔸 Дней в расчете: {stats['days_count']}\n"
+                        f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
                     )
                     self.send_to_chat(avg_msg)
 
             self.last_successful_send = datetime.now()
-            self.last_rate = usd
+            self.last_rate = current_rate
             return True
 
         except Exception as e:
@@ -186,7 +214,7 @@ def run_scheduler():
 @app.route('/')
 def home():
     return """
-    <h1>Сервис курса валют</h1>
+    <h1>Сервис курса USD</h1>
     <p>Сервис работает. Отчеты отправляются ежедневно в 08:00 МСК.</p>
     <p>В последний день месяца включаются дополнительные отчеты.</p>
     <p><a href="/health">Проверить статус</a></p>
