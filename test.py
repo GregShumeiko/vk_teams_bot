@@ -31,11 +31,12 @@ class CurrencyService:
         self.last_rate: Optional[float] = None
         self.last_successful_send: Optional[datetime] = None
         self.start_time = datetime.now()
+        self.test_mode = True  # По умолчанию в тестовом режиме
 
     def get_rate(self, date: datetime) -> Optional[float]:
         """Получаем курс USD на указанную дату"""
         try:
-            if date.date() == datetime.now().date():
+            if date.date() == datetime.now().date() and not self.test_mode:
                 response = httpx.get(DAILY_URL, timeout=10)
             else:
                 url = ARCHIVE_URL.format(
@@ -99,7 +100,7 @@ class CurrencyService:
         }
 
     def send_to_chat(self, text: str) -> bool:
-        """Отправляет сообщение в чат (всегда реальная отправка)"""
+        """Отправляет сообщение в чат"""
         try:
             response = httpx.get(
                 "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
@@ -116,11 +117,11 @@ class CurrencyService:
             return False
 
     def send_test_reports(self) -> bool:
-        """Отправляет тестовые отчеты (март как последний день месяца)"""
+        """Отправляет тестовые отчеты"""
         try:
             logger.info("Отправка ТЕСТОВЫХ отчетов")
             
-            # 1. Получаем текущий реальный курс
+            # 1. Получаем текущий курс (реальный)
             response = httpx.get(DAILY_URL, timeout=10)
             response.raise_for_status()
             data = response.json()
@@ -130,26 +131,30 @@ class CurrencyService:
             current_date = datetime.fromisoformat(data["Date"])
             date_str = current_date.strftime("%d.%m.%Y")
 
-            # 2. Отправляем текущий курс (реальный)
-            current_msg = f"🟢 ТЕСТ: Текущий курс на {date_str}:\nUSD: {usd:.2f} ₽\nEUR: {eur:.2f} ₽"
+            # 2. Отправляем текущий курс
+            current_msg = f"📊 ТЕКУЩИЙ КУРС ({date_str}):\nUSD: {usd:.2f} ₽\nEUR: {eur:.2f} ₽"
             self.send_to_chat(current_msg)
 
-            # 3. Рассчитываем статистику за март 2025 (имитация)
+            # 3. Тестовые данные за март
+            self.test_mode = True
             march_stats = self.calculate_monthly_stats(2025, 3)
+            self.test_mode = False
+            
             if march_stats:
-                # Курс Bidease на апрель (последний курс марта × 1.06)
+                # Курс Bidease на апрель
                 bidease_msg = (
-                    f"🟡 ТЕСТ: Курс Bidease на апрель 2025:\n"
-                    f"{march_stats['last_rate'] * 1.06:.2f} ₽ "
-                    f"(рассчитано как {march_stats['last_rate']:.2f} * 1.06)"
+                    f"🔮 ТЕСТ: BIDEASE НА АПРЕЛЬ 2025\n"
+                    f"Последний курс марта: {march_stats['last_rate']:.2f} ₽\n"
+                    f"Расчетный курс: {march_stats['last_rate'] * 1.06:.2f} ₽ (+6%)"
                 )
                 self.send_to_chat(bidease_msg)
 
-                # Средневзвешенный курс за март
+                # Средневзвешенный курс
                 avg_msg = (
-                    f"🔵 ТЕСТ: Средневзвешенный курс USD за март 2025:\n"
-                    f"{march_stats['avg_rate']:.2f} ₽ "
-                    f"(по {march_stats['days_count']} дням)"
+                    f"📈 ТЕСТ: СРЕДНИЙ КУРС ЗА МАРТ 2025\n"
+                    f"Среднее: {march_stats['avg_rate']:.2f} ₽\n"
+                    f"Дней в расчете: {march_stats['days_count']}\n"
+                    f"Последний курс: {march_stats['last_rate']:.2f} ₽"
                 )
                 self.send_to_chat(avg_msg)
 
@@ -158,7 +163,8 @@ class CurrencyService:
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка формирования тестового отчета: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка тестового отчета: {str(e)}", exc_info=True)
+            self.test_mode = False
             return False
 
 # Инициализация сервиса
@@ -166,7 +172,7 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     """Запускает планировщик задач"""
-    # Для теста запускаем сразу при старте
+    # Для теста запускаем сразу
     currency_service.send_test_reports()
     
     # Основное расписание (оставлено для будущего использования)
@@ -179,15 +185,16 @@ def run_scheduler():
 @app.route('/')
 def home():
     return """
-    <h1>Сервис курса валют (ТЕСТОВЫЙ РЕЖИМ)</h1>
-    <p>Сервис в тестовом режиме. Проводится проверка расчетов за март 2025.</p>
-    <p><a href="/health">Проверить статус</a></p>
+    <h1>Сервис курса валют (ТЕСТ)</h1>
+    <p>Сервис в тестовом режиме. Проверка расчетов за март 2025.</p>
+    <p>Сообщения были отправлены в чат.</p>
+    <p><a href="/health">Статус работы</a></p>
     """
 
 @app.route('/health')
 def health_check():
     return jsonify({
-        "status": "test_mode",
+        "status": "test_mode" if currency_service.test_mode else "production",
         "start_time": currency_service.start_time.isoformat(),
         "last_successful_send": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None,
         "last_rate": currency_service.last_rate,
