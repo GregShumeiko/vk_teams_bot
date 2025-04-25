@@ -2,7 +2,7 @@ services:
   - type: background
     name: vk-teams-bot
     env: python
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
