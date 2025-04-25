@@ -8,7 +8,8 @@ import time
 import schedule
 import socket
 import calendar
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, Any
+from functools import lru_cache
 
 app = Flask(__name__)
 
@@ -37,19 +38,24 @@ class CurrencyService:
         self.last_successful_send: Optional[datetime] = None
         self.start_time = datetime.now()
         self.http_client = httpx.Client(timeout=30.0)
-        self.previous_rate: Optional[float] = None
+        self.rate_cache: Dict[datetime.date, float] = {}
 
     def __del__(self):
         self.http_client.close()
 
-    def get_rate_with_change(self, date: datetime) -> Tuple[Optional[float], Optional[float]]:
-        """Получаем курс USD и изменение от предыдущего дня"""
+    @lru_cache(maxsize=365)
+    def get_rate(self, date: datetime) -> Optional[float]:
+        """Получаем курс USD с кешированием"""
         try:
+            # Проверяем кеш
+            if date.date() in self.rate_cache:
+                return self.rate_cache[date.date()]
+                
             if date.date() == datetime.now().date():
                 response = self.http_client.get(DAILY_URL)
             else:
                 if date.year < MIN_YEAR:
-                    return None, None
+                    return None
                 
                 url = ARCHIVE_URL.format(
                     year=date.year,
@@ -59,32 +65,43 @@ class CurrencyService:
                 response = self.http_client.get(url)
             
             if response.status_code == 200:
-                current_rate = round(response.json()["Valute"]["USD"]["Value"], 4)
-                
-                # Получаем предыдущий рабочий день
-                prev_date = date - timedelta(days=1)
-                prev_rate = self.get_last_available_rate(prev_date)
-                
-                return current_rate, (current_rate - prev_rate) if prev_rate else None
-            return None, None
+                rate = round(response.json()["Valute"]["USD"]["Value"], 4)
+                self.rate_cache[date.date()] = rate
+                return rate
+            return None
         except Exception as e:
             logger.error(f"Ошибка получения курса: {str(e)}")
-            return None, None
-
-    def get_last_available_rate(self, date: datetime) -> Optional[float]:
-        """Рекурсивно ищет последний доступный курс"""
-        if date.year < MIN_YEAR:
             return None
+
+    def get_previous_workday_rate(self, date: datetime) -> Optional[float]:
+        """Эффективный поиск предыдущего рабочего дня"""
+        for delta in range(1, 8):  # Проверяем не более 7 дней назад
+            prev_date = date - timedelta(days=delta)
+            if prev_date.weekday() >= 5:  # Пропускаем выходные
+                continue
+                
+            # Проверяем кеш
+            if prev_date.date() in self.rate_cache:
+                return self.rate_cache[prev_date.date()]
+                
+            rate = self.get_rate(prev_date)
+            if rate is not None:
+                return rate
+        return None
+
+    def get_rate_with_change(self, date: datetime) -> Tuple[Optional[float], Optional[float]]:
+        """Получаем курс и изменение с оптимизированными запросами"""
+        current_rate = self.get_rate(date)
+        if current_rate is None:
+            return None, None
             
-        rate, _ = self.get_rate_with_change(date)
-        if rate is not None:
-            return rate
+        prev_rate = self.get_previous_workday_rate(date)
+        change = (current_rate - prev_rate) if prev_rate else None
         
-        prev_date = date - timedelta(days=1)
-        return self.get_last_available_rate(prev_date)
+        return current_rate, change
 
     def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Рассчитывает статистику за месяц"""
+        """Оптимизированный расчет статистики за месяц"""
         if year < MIN_YEAR:
             logger.warning(f"Запрошен год {year} (минимум {MIN_YEAR})")
             return None
@@ -93,20 +110,14 @@ class CurrencyService:
         rates = []
         current_rate = None
         
+        # Сначала пробуем получить все доступные курсы за месяц
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
-            rate, _ = self.get_rate_with_change(date)
-            
+            rate = self.get_rate(date)
             if rate is not None:
-                current_rate = rate
-            elif current_rate is None:
-                current_rate = self.get_last_available_rate(date - timedelta(days=1))
-                if current_rate is None:
-                    continue
-            
-            rates.append(current_rate)
-            logger.debug(f"{date.strftime('%d.%m.%Y')}: {current_rate:.4f} ₽")
+                rates.append(rate)
         
+        # Если данных нет, используем стратегию заполнения пропусков
         if not rates:
             return None
             
@@ -174,7 +185,7 @@ class CurrencyService:
                 # Курс Bidease
                 next_month = (current_date + timedelta(days=32)).replace(day=1)
                 bidease_msg = (
-                    f"🔮 Прогноз Bidease на {next_month.strftime('%B %Y')}:\n"
+                    f"🔮 Курс Bidease на {next_month.strftime('%B %Y')}:\n"
                     f"🔹 {round(current_rate * 1.06, 4):.4f} ₽\n"
                     f"🔸 На основе: {current_rate:.4f} ₽ × 1.06"
                 )
@@ -184,7 +195,7 @@ class CurrencyService:
                 stats = self.calculate_monthly_stats(current_date.year, current_date.month)
                 if stats:
                     avg_msg = (
-                        f"📊 Средний курс за {current_date.strftime('%B %Y')}:\n"
+                        f"📊 Средневзвешенный курс за {current_date.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
                         f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
@@ -204,7 +215,7 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     """Запускает планировщик задач"""
-    schedule.every().day.at("18:55").do(currency_service.send_daily_report)  # 05:00 UTC = 08:00 МСК
+    schedule.every().day.at("19:09").do(currency_service.send_daily_report)  # 05:00 UTC = 08:00 МСК
     currency_service.send_daily_report()  # Первая отправка при запуске
     
     while True:
@@ -229,7 +240,8 @@ def health_check():
         "last_rate": currency_service.last_rate,
         "is_last_day_of_month": calendar.monthrange(datetime.now().year, datetime.now().month)[1] == datetime.now().day,
         "next_run": str(schedule.next_run()),
-        "min_year": MIN_YEAR
+        "min_year": MIN_YEAR,
+        "cache_size": len(currency_service.rate_cache)
     })
 
 # Запуск фоновых задач
