@@ -1,8 +1,15 @@
-services:
-  - type: web
-    name: vk_teams_bot
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python bot.py"
-    plan: free
-    port: 8080  # Пытаемся указать порт, даже если не используется
+    services:
+- type: web
+  name: vk-teams-bot
+  runtime: python
+  repo: https://github.com/GregShumeiko/vk_teams_bot
+  plan: free
+  envVars:
+  - key: CHAT_ID
+    sync: false
+  - key: TOKEN
+    sync: false
+  region: oregon
+  buildCommand: pip install -r requirements.txt
+  startCommand: python3 bot.py
+version: "1"
