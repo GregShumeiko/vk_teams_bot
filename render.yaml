@@ -1,15 +1,7 @@
-    services:
-- type: web
-  name: vk-teams-bot
-  runtime: python
-  repo: https://github.com/GregShumeiko/vk_teams_bot
-  plan: free
-  envVars:
-  - key: CHAT_ID
-    sync: false
-  - key: TOKEN
-    sync: false
-  region: oregon
-  buildCommand: pip install -r requirements.txt
-  startCommand: python3 bot.py
-version: "1"
+services:
+  - type: worker
+    name: currency-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    schedule: "19 30 * * *"  # Каждый день в 05:00 UTC (08:00 МСК)
