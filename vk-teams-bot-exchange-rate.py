@@ -215,7 +215,7 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     """Запускает планировщик задач"""
-    schedule.every().day.at("19:09").do(currency_service.send_daily_report)  # 05:00 UTC = 08:00 МСК
+    schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 05:00 UTC = 08:00 МСК
     currency_service.send_daily_report()  # Первая отправка при запуске
     
     while True:
