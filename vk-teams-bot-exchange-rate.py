@@ -34,7 +34,7 @@ class CurrencyService:
         self.start_time = datetime.now()
 
     def get_rate(self, date: datetime) -> Optional[float]:
-        """Получаем курс USD на указанную дату"""
+        """Получаем курс USD на текущую дату"""
         try:
             if date.date() == datetime.now().date():
                 response = httpx.get(DAILY_URL, timeout=10)
