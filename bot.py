@@ -62,7 +62,7 @@ def send_exchange_rate():
 
 def run_schedule():
     # Настройка расписания
-    schedule.every().day.at("19:35").do(send_exchange_rate)  # 05:00 UTC = 08:00 МСК
+    schedule.every().day.at("19:41").do(send_exchange_rate)  # 05:00 UTC = 08:00 МСК
     
     # Первая отправка при запуске
     send_exchange_rate()
