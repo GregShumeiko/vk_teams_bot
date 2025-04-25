@@ -96,7 +96,8 @@ class CurrencyService:
             return None, None
             
         prev_rate = self.get_previous_workday_rate(date)
-        change = (current_rate - prev_rate) if prev_rate else None
+        # Исправленный расчет: текущий курс минус предыдущий
+        change = (current_rate - prev_rate) if prev_rate is not None else None
         
         return current_rate, change
 
@@ -148,10 +149,12 @@ class CurrencyService:
 
     def format_change(self, change: float) -> str:
         """Форматирует изменение курса с эмодзи"""
+        if change is None:
+            return "🔄 Нет данных"
         if change > 0:
-            return f"📈 +{abs(change):.4f}"
+            return f"📈 +{change:.4f}"  # Курс вырос
         elif change < 0:
-            return f"📉 -{abs(change):.4f}"
+            return f"📉 {change:.4f}"   # Курс упал (знак уже в числе)
         return "➡️ 0.0000"
 
     def send_daily_report(self) -> bool:
@@ -168,7 +171,7 @@ class CurrencyService:
             date_str = current_date.strftime("%d.%m.%Y")
 
             # Основное сообщение
-            change_str = self.format_change(change) if change is not None else "🔄 Нет данных"
+            change_str = self.format_change(change)
             message = (
                 f"💵 Курс USD на {date_str}:\n"
                 f"🔹 {current_rate:.4f} ₽\n"
@@ -185,7 +188,7 @@ class CurrencyService:
                 # Курс Bidease
                 next_month = (current_date + timedelta(days=32)).replace(day=1)
                 bidease_msg = (
-                    f"🔮 Курс Bidease на {next_month.strftime('%B %Y')}:\n"
+                    f"🔮 Прогноз Bidease на {next_month.strftime('%B %Y')}:\n"
                     f"🔹 {round(current_rate * 1.06, 4):.4f} ₽\n"
                     f"🔸 На основе: {current_rate:.4f} ₽ × 1.06"
                 )
@@ -195,7 +198,7 @@ class CurrencyService:
                 stats = self.calculate_monthly_stats(current_date.year, current_date.month)
                 if stats:
                     avg_msg = (
-                        f"📊 Средневзвешенный курс за {current_date.strftime('%B %Y')}:\n"
+                        f"📊 Средний курс за {current_date.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
                         f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
