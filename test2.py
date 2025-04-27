@@ -115,7 +115,7 @@ class CurrencyService:
     def format_change(self, change: float | None) -> str:
         if change is None:
             return "🔄 Нет данных"
-        return f"📈 +{change:.4f}" if change > 0 else f"📉 {change:.4f}" if change < 0 else "➡️ 0.0000"
+        return f"📈 +{change:.4f}" if change > 0 else f"📉 {change:.4f}" if change < 0 else "🚫 изменений нет"
 
     def send_daily_report(self) -> bool:
         """Отправка ежедневного отчета."""
@@ -146,7 +146,7 @@ class CurrencyService:
                         f"📊 Средневзвешенный курс за {prev_month.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
-                        f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
+                        f"💰 Последний курс: {stats['last_rate']:.4f} ₽"
                     )
                     self.send_to_chat(avg_message)
 
@@ -168,7 +168,7 @@ class CurrencyService:
 currency_service = CurrencyService()
 
 def run_scheduler():
-    schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
+    schedule.every().day.at("11:00").do(currency_service.send_daily_report)  # 08:00 МСК
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping"))
 
     currency_service.send_daily_report()  # стартовое сообщение
