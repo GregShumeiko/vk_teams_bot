@@ -7,7 +7,6 @@ import os
 import time
 import schedule
 import calendar
-from typing import Optional, Dict, Tuple, Any
 from functools import lru_cache
 
 app = Flask(__name__)
@@ -33,83 +32,64 @@ MIN_YEAR = 2025
 
 class CurrencyService:
     def __init__(self):
-        self.last_rate: Optional[float] = None
-        self.last_successful_send: Optional[datetime] = None
         self.start_time = datetime.now()
+        self.last_successful_send = None
+        self.last_rate = None
+        self.rate_cache = {}
         self.http_client = httpx.Client(timeout=30.0)
-        self.rate_cache: Dict[datetime.date, float] = {}
 
     def __del__(self):
         self.http_client.close()
 
     @lru_cache(maxsize=365)
-    def get_rate(self, date: datetime) -> Optional[float]:
-        """Получаем курс USD с кешированием"""
+    def get_rate(self, date: datetime) -> float | None:
+        """Получение курса на конкретную дату с кэшированием."""
         try:
-            if date.date() in self.rate_cache:
-                return self.rate_cache[date.date()]
-                
-            if date.date() == datetime.now().date():
-                response = self.http_client.get(DAILY_URL)
+            date_key = date.date()
+            if date_key in self.rate_cache:
+                return self.rate_cache[date_key]
+            
+            if date_key == datetime.now().date():
+                url = DAILY_URL
             else:
                 if date.year < MIN_YEAR:
                     return None
-                
-                url = ARCHIVE_URL.format(
-                    year=date.year,
-                    month=date.month,
-                    day=date.day
-                )
-                response = self.http_client.get(url)
+                url = ARCHIVE_URL.format(year=date.year, month=date.month, day=date.day)
             
-            if response.status_code == 200:
-                rate = round(response.json()["Valute"]["USD"]["Value"], 4)
-                self.rate_cache[date.date()] = rate
-                return rate
-            return None
+            response = self.http_client.get(url)
+            if response.status_code != 200:
+                return None
+
+            rate = round(response.json()["Valute"]["USD"]["Value"], 4)
+            self.rate_cache[date_key] = rate
+            return rate
         except Exception as e:
-            logger.error(f"Ошибка получения курса: {str(e)}")
+            logger.error(f"Ошибка получения курса: {e}")
             return None
 
-    def get_last_available_rate(self, date: datetime) -> Optional[float]:
-        """Ищет последний доступный курс (рабочий день)"""
-        for delta in range(0, 30):  # Проверяем последние 30 дней
-            check_date = date - timedelta(days=delta)
-            rate = self.get_rate(check_date)
+    def get_previous_workday_rate(self, from_date: datetime) -> float | None:
+        """Получение курса за последний рабочий день перед from_date."""
+        for days_ago in range(1, 10):  # максимум 9 дней назад
+            candidate = from_date - timedelta(days=days_ago)
+            rate = self.get_rate(candidate)
             if rate is not None:
                 return rate
         return None
 
-    def get_rate_with_change(self, date: datetime) -> Tuple[Optional[float], Optional[float]]:
-        """Получаем курс и изменение относительно последнего рабочего дня"""
-        current_rate = self.get_rate(date)
-        if current_rate is None:
-            return None, None
-            
-        # Ищем последний доступный курс (рабочий день)
-        prev_rate = self.get_last_available_rate(date - timedelta(days=1))
-        
-        change = (current_rate - prev_rate) if prev_rate is not None else None
-        
-        return current_rate, change
-
-    def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Статистика за месяц"""
+    def calculate_monthly_stats(self, year: int, month: int) -> dict | None:
+        """Расчет средней ставки и последней ставки месяца."""
         if year < MIN_YEAR:
             return None
-            
         last_day = calendar.monthrange(year, month)[1]
         rates = []
-        
         for day in range(1, last_day + 1):
-            date = datetime(year, month, day)
-            rate = self.get_rate(date)
+            rate = self.get_rate(datetime(year, month, day))
             if rate is not None:
                 rates.append(rate)
-        
+
         if not rates:
             return None
-            
+
         return {
             "last_rate": rates[-1],
             "avg_rate": round(sum(rates) / len(rates), 4),
@@ -117,98 +97,82 @@ class CurrencyService:
         }
 
     def send_to_chat(self, text: str) -> bool:
-        """Отправка сообщения"""
+        """Отправка текста в чат VK Teams."""
         try:
             response = self.http_client.get(
                 "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
                 params={"token": TOKEN, "chatId": CHAT_ID, "text": text}
             )
             if response.status_code == 200:
-                logger.info("Сообщение отправлено")
+                logger.info("Сообщение успешно отправлено")
                 return True
-            logger.error(f"Ошибка: {response.text}")
+            logger.error(f"Ошибка отправки: {response.text}")
             return False
         except Exception as e:
-            logger.error(f"Ошибка отправки: {str(e)}")
+            logger.error(f"Ошибка отправки сообщения: {e}")
             return False
 
-    def format_change(self, change: float) -> str:
-        """Форматирование изменения"""
+    def format_change(self, change: float | None) -> str:
         if change is None:
             return "🔄 Нет данных"
-        if change > 0:
-            return f"📈 +{change:.4f}"
-        elif change < 0:
-            return f"📉 {change:.4f}"
-        return "➡️ 0.0000"
+        return f"📈 +{change:.4f}" if change > 0 else f"📉 {change:.4f}" if change < 0 else "➡️ 0.0000"
 
     def send_daily_report(self) -> bool:
-        """Ежедневный отчет"""
+        """Отправка ежедневного отчета."""
         try:
-            current_date = datetime.now()
-            current_rate, change = self.get_rate_with_change(current_date)
-            
-            if current_rate is None:
-                raise ValueError("Не удалось получить курс")
-            
-            date_str = current_date.strftime("%d.%m.%Y")
+            today = datetime.now()
+            rate_today = self.get_rate(today)
+            if rate_today is None:
+                raise ValueError("Курс сегодня не получен.")
 
-            # Основное сообщение
+            prev_rate = self.get_previous_workday_rate(today)
+            change = (rate_today - prev_rate) if prev_rate is not None else None
+
+            date_str = today.strftime("%d.%m.%Y")
             message = (
                 f"💵 Курс USD на {date_str}:\n"
-                f"🔹 {current_rate:.4f} ₽\n"
-                f"🔸 Изменение: {self.format_change(change)}\n"
-                f"ℹ️ Относительно последнего рабочего дня"
+                f"🔹 {rate_today:.4f} ₽\n"
+                f"🔸 Изменение: {self.format_change(change)}"
             )
-            
-            if not self.send_to_chat(message):
-                return False
+            self.send_to_chat(message)
 
             # Дополнительные отчеты в первый день месяца
-            if current_date.day == 1:
-                logger.info("Отправка дополнительных отчетов за прошлый месяц")
-                
-                # Получаем данные за прошлый месяц
-                prev_month = current_date.replace(day=1) - timedelta(days=1)
+            if today.day == 1:
+                prev_month = today.replace(day=1) - timedelta(days=1)
                 stats = self.calculate_monthly_stats(prev_month.year, prev_month.month)
-                
+
                 if stats:
-                    month_name = prev_month.strftime("%B %Y")
-                    avg_msg = (
-                        f"📊 Итоги за {month_name}:\n"
-                        f"🔹 Средний курс: {stats['avg_rate']:.4f} ₽\n"
+                    avg_message = (
+                        f"📊 Средневзвешенный курс за {prev_month.strftime('%B %Y')}:\n"
+                        f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
                         f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
                     )
-                    self.send_to_chat(avg_msg)
+                    self.send_to_chat(avg_message)
 
-                    # Прогноз на текущий месяц
-                    forecast_msg = (
-                        f"🔮 Прогноз на {current_date.strftime('%B %Y')}:\n"
-                        f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
-                        f"🔸 На основе: {stats['last_rate']:.4f} ₽ × 1.06"
+                    bidease_message = (
+                        f"🔮 Прогноз курса Bidease на {today.strftime('%B %Y')}:\n"
+                        f"🔹 {round(rate_today * 1.06, 4):.4f} ₽\n"
+                        f"🔸 На основе курса: {rate_today:.4f} ₽ × 1.06"
                     )
-                    self.send_to_chat(forecast_msg)
+                    self.send_to_chat(bidease_message)
 
-            self.last_successful_send = current_date
-            self.last_rate = current_rate
+            self.last_successful_send = datetime.now()
+            self.last_rate = rate_today
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка отчета: {str(e)}")
+            logger.error(f"Ошибка отправки отчета: {e}")
             return False
 
 currency_service = CurrencyService()
 
 def run_scheduler():
-    """Планировщик задач"""
-    # Основное расписание
     schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
-    # Самопинг каждые 55 минут
-    schedule.every(55).minutes.do(lambda: logger.info("Self-ping to keep alive"))
-    
-    currency_service.send_daily_report()  # Первый запуск
-    
+    schedule.every(55).minutes.do(lambda: logger.info("Self-ping"))
+
+    currency_service.send_daily_report()  # стартовое сообщение
+
     while True:
         schedule.run_pending()
         time.sleep(60)
@@ -217,37 +181,27 @@ def run_scheduler():
 def home():
     return """
     <h1>Сервис курса USD</h1>
-    <p>Сервис работает. Отчеты отправляются ежедневно в 08:00 МСК.</p>
-    <p>В первый день месяца включаются дополнительные отчеты.</p>
+    <p>Бот работает, отправляет курс ежедневно в 08:00 МСК.</p>
     <p><a href="/health">Проверить статус</a></p>
-    <p><a href="/ping">Проверить активность</a></p>
+    <p><a href="/ping">Ping</a></p>
     """
 
 @app.route('/health')
-def health_check():
+def health():
     return jsonify({
         "status": "running",
         "start_time": currency_service.start_time.isoformat(),
         "last_successful_send": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None,
-        "last_rate": currency_service.last_rate,
-        "is_first_day_of_month": datetime.now().day == 1,
-        "next_run": str(schedule.next_run()),
-        "min_year": MIN_YEAR,
-        "cache_size": len(currency_service.rate_cache)
+        "last_rate": currency_service.last_rate
     })
 
 @app.route('/ping')
 def ping():
-    """Эндпоинт для внешнего пинга"""
-    logger.info("Received ping request")
-    return jsonify({
-        "status": "alive",
-        "time": datetime.now().isoformat(),
-        "last_report": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None
-    })
+    logger.info("Ping received")
+    return jsonify({"status": "alive", "time": datetime.now().isoformat()})
 
-# Запуск планировщика в фоне
+# Запуск фонового потока
 threading.Thread(target=run_scheduler, daemon=True).start()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5000)))
