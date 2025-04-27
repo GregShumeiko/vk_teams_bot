@@ -6,7 +6,6 @@ import logging
 import os
 import time
 import schedule
-import socket
 import calendar
 from typing import Optional, Dict, Tuple, Any
 from functools import lru_cache
@@ -55,12 +54,7 @@ class CurrencyService:
             else:
                 if date.year < MIN_YEAR:
                     return None
-                
-                url = ARCHIVE_URL.format(
-                    year=date.year,
-                    month=date.month,
-                    day=date.day
-                )
+                url = ARCHIVE_URL.format(year=date.year, month=date.month, day=date.day)
                 response = self.http_client.get(url)
             
             if response.status_code == 200:
@@ -73,19 +67,9 @@ class CurrencyService:
             return None
 
     def get_previous_workday_rate(self, date: datetime) -> Optional[float]:
-        """Ищет курс за предыдущий рабочий день (не пропуская выходные)"""
-        prev_date = date - timedelta(days=1)
-        
-        if prev_date.weekday() >= 5:
-            rate = self.get_rate(prev_date)
-            if rate is not None:
-                return rate
-        
+        """Ищет курс за последний доступный рабочий день"""
         for delta in range(1, 8):
             prev_date = date - timedelta(days=delta)
-            if prev_date.date() in self.rate_cache:
-                return self.rate_cache[prev_date.date()]
-                
             rate = self.get_rate(prev_date)
             if rate is not None:
                 return rate
@@ -122,8 +106,22 @@ class CurrencyService:
         return {
             "last_rate": rates[-1],
             "avg_rate": round(sum(rates) / len(rates), 4),
-            "days_count": len(rates)
+            "min_rate": min(rates),
+            "max_rate": max(rates),
+            "range": round(max(rates) - min(rates), 4),
+            "days_count": len(rates),
+            "trend": self.calculate_trend(rates)
         }
+
+    def calculate_trend(self, rates: list) -> str:
+        """Определение тренда"""
+        if not rates:
+            return "нет данных"
+        if rates[-1] > rates[0]:
+            return "📈 Рост"
+        elif rates[-1] < rates[0]:
+            return "📉 Падение"
+        return "➡️ Стабильность"
 
     def send_to_chat(self, text: str) -> bool:
         """Отправка сообщения"""
@@ -149,7 +147,14 @@ class CurrencyService:
             return f"📈 +{change:.4f}"
         elif change < 0:
             return f"📉 {change:.4f}"
-        return "➡️ 0.0000"
+        return "нет ❎"
+
+    def format_change_percent(self, change: float, prev_rate: float) -> str:
+        """Форматирование процентного изменения"""
+        if change is None or prev_rate == 0:
+            return "🔄 Нет данных"
+        percent = (change / prev_rate) * 100
+        return f"({percent:+.2f}%)"
 
     def send_daily_report(self) -> bool:
         """Ежедневный отчет"""
@@ -161,35 +166,58 @@ class CurrencyService:
             current_date = datetime.now()
             date_str = current_date.strftime("%d.%m.%Y")
 
+            # Подсчет процентного изменения
+            prev_rate = self.get_previous_workday_rate(current_date)
+            change_percent = self.format_change_percent(change, prev_rate) if prev_rate else ""
+
+            # Большой скачок
+            jump_comment = ""
+            if change and abs(change) >= 1.0:
+                jump_comment = "\n🚨 Обнаружен большой скачок курса!"
+
             message = (
                 f"💵 Курс USD на {date_str}:\n"
                 f"🔹 {current_rate:.4f} ₽\n"
-                f"🔸 Изменение: {self.format_change(change)}"
+                f"🔸 Изменение: {self.format_change(change)} {change_percent}"
+                f"{jump_comment}"
             )
             
-            if not self.send_to_chat(message):
-                return False
+            self.send_to_chat(message)
 
-            if current_date.day == calendar.monthrange(current_date.year, current_date.month)[1]:
-                logger.info("Отправка дополнительных отчетов за месяц")
+            # Дополнительные отчеты
+            if current_date.day == 1:
+                logger.info("Отправка дополнительных отчетов за предыдущий месяц")
                 
-                next_month = (current_date + timedelta(days=32)).replace(day=1)
-                bidease_msg = (
-                    f"🔮 Курс Bidease на {next_month.strftime('%B %Y')}:\n"
-                    f"🔹 {round(current_rate * 1.06, 4):.4f} ₽\n"
-                    f"🔸 На основе: {current_rate:.4f} ₽ × 1.06"
-                )
-                self.send_to_chat(bidease_msg)
-
-                stats = self.calculate_monthly_stats(current_date.year, current_date.month)
+                prev_month_date = (current_date.replace(day=1) - timedelta(days=1))
+                stats = self.calculate_monthly_stats(prev_month_date.year, prev_month_date.month)
+                
                 if stats:
+                    # Курс Bidease
+                    bidease_msg = (
+                        f"🔮 Курс Bidease на {current_date.strftime('%B %Y')}:\n"
+                        f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
+                        f"🔸 На основе: {stats['last_rate']:.4f} ₽ × 1.06"
+                    )
+                    self.send_to_chat(bidease_msg)
+
+                    # Средневзвешенный курс
                     avg_msg = (
-                        f"📊 Средневзвешенный курс за {current_date.strftime('%B %Y')}:\n"
+                        f"📊 Средневзвешенный курс за {prev_month_date.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
-                        f"🔹 Последний курс: {stats['last_rate']:.4f} ₽"
+                        f"▪️ Последний курс месяца: {stats['last_rate']:.4f} ₽"
                     )
                     self.send_to_chat(avg_msg)
+
+                    # Аналитика месяца
+                    analytics_msg = (
+                        f"📅 Аналитика за {prev_month_date.strftime('%B %Y')}:\n"
+                        f"🟢 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
+                        f"🔴 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
+                        f"⚠️ Размах курса: {stats['range']:.4f} ₽\n"
+                        f"🎯 Тренд месяца: {stats['trend']}"
+                    )
+                    self.send_to_chat(analytics_msg)
 
             self.last_successful_send = datetime.now()
             self.last_rate = current_rate
@@ -203,13 +231,11 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     """Планировщик задач"""
-    # Основное расписание
     schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
-    # Самопинг каждые 55 минут (чтобы не пересекаться с другими задачами)
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping to keep alive"))
     
-    currency_service.send_daily_report()  # Первый запуск
-    
+    currency_service.send_daily_report()  # Первый запуск сразу
+
     while True:
         schedule.run_pending()
         time.sleep(60)
@@ -219,7 +245,7 @@ def home():
     return """
     <h1>Сервис курса USD</h1>
     <p>Сервис работает. Отчеты отправляются ежедневно в 08:00 МСК.</p>
-    <p>В последний день месяца включаются дополнительные отчеты.</p>
+    <p>В первый день месяца отправляются дополнительные отчеты.</p>
     <p><a href="/health">Проверить статус</a></p>
     <p><a href="/ping">Проверить активность</a></p>
     """
@@ -231,7 +257,6 @@ def health_check():
         "start_time": currency_service.start_time.isoformat(),
         "last_successful_send": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None,
         "last_rate": currency_service.last_rate,
-        "is_last_day_of_month": calendar.monthrange(datetime.now().year, datetime.now().month)[1] == datetime.now().day,
         "next_run": str(schedule.next_run()),
         "min_year": MIN_YEAR,
         "cache_size": len(currency_service.rate_cache)
@@ -239,7 +264,7 @@ def health_check():
 
 @app.route('/ping')
 def ping():
-    """Эндпоинт для внешнего пинга (например, от UptimeRobot)"""
+    """Эндпоинт для внешнего пинга"""
     logger.info("Received ping request")
     return jsonify({
         "status": "alive",
