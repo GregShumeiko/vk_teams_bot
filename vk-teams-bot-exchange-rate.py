@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-## Конфигурация
+# Конфигурация
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 BASE_CBR_URL = "https://www.cbr-xml-daily.ru"
@@ -76,13 +76,11 @@ class CurrencyService:
         """Ищет курс за предыдущий рабочий день (не пропуская выходные)"""
         prev_date = date - timedelta(days=1)
         
-        # Если предыдущий день - выходной, берем курс за этот день (как делает ЦБ)
         if prev_date.weekday() >= 5:
             rate = self.get_rate(prev_date)
             if rate is not None:
                 return rate
         
-        # Стандартный поиск предыдущего рабочего дня
         for delta in range(1, 8):
             prev_date = date - timedelta(days=delta)
             if prev_date.date() in self.rate_cache:
@@ -100,7 +98,6 @@ class CurrencyService:
             return None, None
             
         prev_rate = self.get_previous_workday_rate(date)
-        # Правильный расчет: текущий минус предыдущий
         change = (current_rate - prev_rate) if prev_rate is not None else None
         
         return current_rate, change
@@ -149,9 +146,9 @@ class CurrencyService:
         if change is None:
             return "🔄 Нет данных"
         if change > 0:
-            return f"📈 +{change:.4f}"  # Курс вырос
+            return f"📈 +{change:.4f}"
         elif change < 0:
-            return f"📉 {change:.4f}"   # Курс упал
+            return f"📉 {change:.4f}"
         return "➡️ 0.0000"
 
     def send_daily_report(self) -> bool:
@@ -164,7 +161,6 @@ class CurrencyService:
             current_date = datetime.now()
             date_str = current_date.strftime("%d.%m.%Y")
 
-            # Основное сообщение
             message = (
                 f"💵 Курс USD на {date_str}:\n"
                 f"🔹 {current_rate:.4f} ₽\n"
@@ -174,11 +170,9 @@ class CurrencyService:
             if not self.send_to_chat(message):
                 return False
 
-            # Дополнительные отчеты в последний день месяца
             if current_date.day == calendar.monthrange(current_date.year, current_date.month)[1]:
                 logger.info("Отправка дополнительных отчетов за месяц")
                 
-                # Прогноз Bidease (добавлен обратно)
                 next_month = (current_date + timedelta(days=32)).replace(day=1)
                 bidease_msg = (
                     f"🔮 Курс Bidease на {next_month.strftime('%B %Y')}:\n"
@@ -187,7 +181,6 @@ class CurrencyService:
                 )
                 self.send_to_chat(bidease_msg)
 
-                # Средневзвешенный курс
                 stats = self.calculate_monthly_stats(current_date.year, current_date.month)
                 if stats:
                     avg_msg = (
@@ -210,7 +203,11 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     """Планировщик задач"""
+    # Основное расписание
     schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
+    # Самопинг каждые 55 минут (чтобы не пересекаться с другими задачами)
+    schedule.every(55).minutes.do(lambda: logger.info("Self-ping to keep alive"))
+    
     currency_service.send_daily_report()  # Первый запуск
     
     while True:
@@ -224,6 +221,7 @@ def home():
     <p>Сервис работает. Отчеты отправляются ежедневно в 08:00 МСК.</p>
     <p>В последний день месяца включаются дополнительные отчеты.</p>
     <p><a href="/health">Проверить статус</a></p>
+    <p><a href="/ping">Проверить активность</a></p>
     """
 
 @app.route('/health')
@@ -239,6 +237,17 @@ def health_check():
         "cache_size": len(currency_service.rate_cache)
     })
 
+@app.route('/ping')
+def ping():
+    """Эндпоинт для внешнего пинга (например, от UptimeRobot)"""
+    logger.info("Received ping request")
+    return jsonify({
+        "status": "alive",
+        "time": datetime.now().isoformat(),
+        "last_report": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None
+    })
+
+# Запуск планировщика в фоне
 threading.Thread(target=run_scheduler, daemon=True).start()
 
 if __name__ == '__main__':
