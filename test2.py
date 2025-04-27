@@ -173,7 +173,7 @@ class CurrencyService:
             # Большой скачок
             jump_comment = ""
             if change and abs(change) >= 1.0:
-                jump_comment = "\n⚡ Обнаружен большой скачок курса!"
+                jump_comment = "\n🚨 Обнаружен большой скачок курса!"
 
             message = (
                 f"💵 Курс USD на {date_str}:\n"
