@@ -115,7 +115,7 @@ class CurrencyService:
     def format_change(self, change: float | None) -> str:
         if change is None:
             return "🔄 Нет данных"
-        return f"📈 +{change:.4f}" if change > 0 else f"📉 {change:.4f}" if change < 0 else "🚫 изменений нет"
+        return f"📈 +{change:.4f}" if change > 0 else f"📉 {change:.4f}" if change < 0 else "нет 🚫"
 
     def send_daily_report(self) -> bool:
         """Отправка ежедневного отчета."""
