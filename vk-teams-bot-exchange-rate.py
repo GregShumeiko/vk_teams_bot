@@ -234,7 +234,7 @@ class CurrencyService:
                         f"🟢 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
                         f"🔴 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
                         f"🔵 Размах курса: {stats['range']:.4f} ₽\n"
-                        f"📊 Тренд: {stats['trend']}\n"}"
+                        f"📊 Тренд: {stats['trend']}\n"
                     )
                     self.send_to_chat(analytics_msg)
 
