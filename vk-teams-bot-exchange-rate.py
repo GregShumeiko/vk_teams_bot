@@ -7,7 +7,7 @@ import os
 import time
 import schedule
 import calendar
-from typing import Optional, Dict, Tuple, Any
+from typing import Optional, Dict, Tuple
 from functools import lru_cache
 
 app = Flask(__name__)
@@ -75,19 +75,41 @@ class CurrencyService:
                 return rate
         return None
 
-    def get_rate_with_change(self, date: datetime) -> Tuple[Optional[float], Optional[float]]:
-        """Получаем курс и изменение"""
-        current_rate = self.get_rate(date)
-        if current_rate is None:
-            return None, None
-            
-        prev_rate = self.get_previous_workday_rate(date)
-        change = (current_rate - prev_rate) if prev_rate is not None else None
-        
-        return current_rate, change
+    def send_to_chat(self, text: str) -> bool:
+        """Отправка сообщения в чат"""
+        try:
+            response = self.http_client.get(
+                "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
+                params={"token": TOKEN, "chatId": CHAT_ID, "text": text}
+            )
+            if response.status_code == 200:
+                logger.info("Сообщение успешно отправлено в чат")
+                return True
+            logger.error(f"Ошибка отправки сообщения: {response.text}")
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения: {str(e)}")
+            return False
+
+    def format_change(self, change: Optional[float]) -> str:
+        """Форматирование изменения"""
+        if change is None:
+            return "🔄 Нет данных"
+        if change > 0:
+            return f"📈 +{change:.4f}"
+        elif change < 0:
+            return f"📉 {change:.4f}"
+        return "❎ Без изменений"
+
+    def format_change_percent(self, change: Optional[float], prev_rate: Optional[float]) -> str:
+        """Форматирование процентного изменения"""
+        if change is None or prev_rate is None or prev_rate == 0:
+            return ""
+        percent = (change / prev_rate) * 100
+        return f"({percent:+.2f}%)"
 
     def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Статистика за месяц"""
+        """Подсчёт статистики за месяц"""
         if year < MIN_YEAR:
             return None
             
@@ -121,58 +143,34 @@ class CurrencyService:
             return "📈 Рост"
         elif rates[-1] < rates[0]:
             return "📉 Падение"
-        return "➡️ Стабильность"
-
-    def send_to_chat(self, text: str) -> bool:
-        """Отправка сообщения"""
-        try:
-            response = self.http_client.get(
-                "https://api.internal.myteam.mail.ru/bot/v1/messages/sendText",
-                params={"token": TOKEN, "chatId": CHAT_ID, "text": text}
-            )
-            if response.status_code == 200:
-                logger.info("Сообщение отправлено")
-                return True
-            logger.error(f"Ошибка: {response.text}")
-            return False
-        except Exception as e:
-            logger.error(f"Ошибка отправки: {str(e)}")
-            return False
-
-    def format_change(self, change: float) -> str:
-        """Форматирование изменения"""
-        if change is None:
-            return "🔄 Нет данных"
-        if change > 0:
-            return f"📈 +{change:.4f}"
-        elif change < 0:
-            return f"📉 {change:.4f}"
-        return "нет ❎"
-
-    def format_change_percent(self, change: float, prev_rate: float) -> str:
-        """Форматирование процентного изменения"""
-        if change is None or prev_rate == 0:
-            return "🔄 Нет данных"
-        percent = (change / prev_rate) * 100
-        return f"({percent:+.2f}%)"
+        return "⏸️ Стабильность"
 
     def send_daily_report(self) -> bool:
         """Ежедневный отчет"""
         try:
-            current_rate, change = self.get_rate_with_change(datetime.now())
+            today = datetime.now()
+            current_rate = self.get_rate(today)
+            prev_rate = self.get_previous_workday_rate(today)
+
             if current_rate is None:
-                raise ValueError("Не удалось получить курс")
-            
-            current_date = datetime.now()
-            date_str = current_date.strftime("%d.%m.%Y")
+                logger.warning("Курс за сегодня не найден, отправка отменена.")
+                return False
 
-            # Подсчет процентного изменения
-            prev_rate = self.get_previous_workday_rate(current_date)
-            change_percent = self.format_change_percent(change, prev_rate) if prev_rate else ""
+            if prev_rate is None:
+                logger.warning("Курс за предыдущий рабочий день не найден, отправка отменена.")
+                return False
 
-            # Большой скачок
+            # Новая защита: если курс не изменился — не отправляем
+            if current_rate == prev_rate:
+                logger.info("Курс не изменился, сообщение не отправляется.")
+                return False
+
+            change = current_rate - prev_rate
+            change_percent = self.format_change_percent(change, prev_rate)
+
+            date_str = today.strftime("%d.%m.%Y")
             jump_comment = ""
-            if change and abs(change) >= 1.0:
+            if abs(change) >= 1.0:
                 jump_comment = "\n🚨 Обнаружен большой скачок курса!"
 
             message = (
@@ -181,41 +179,36 @@ class CurrencyService:
                 f"🔸 Изменение: {self.format_change(change)} {change_percent}"
                 f"{jump_comment}"
             )
-            
+
             self.send_to_chat(message)
 
-            # Дополнительные отчеты
-            if current_date.day == 1:
+            # Дополнительные отчеты 1-го числа месяца
+            if today.day == 1:
                 logger.info("Отправка дополнительных отчетов за предыдущий месяц")
-                
-                prev_month_date = (current_date.replace(day=1) - timedelta(days=1))
-                stats = self.calculate_monthly_stats(prev_month_date.year, prev_month_date.month)
-                
+                prev_month = today.replace(day=1) - timedelta(days=1)
+                stats = self.calculate_monthly_stats(prev_month.year, prev_month.month)
                 if stats:
-                    # Курс Bidease
                     bidease_msg = (
-                        f"🔮 Курс Bidease на {current_date.strftime('%B %Y')}:\n"
+                        f"🔮 Курс Bidease на {today.strftime('%B %Y')}:\n"
                         f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
                         f"🔸 На основе: {stats['last_rate']:.4f} ₽ × 1.06"
                     )
                     self.send_to_chat(bidease_msg)
 
-                    # Средневзвешенный курс
                     avg_msg = (
-                        f"📊 Средневзвешенный курс за {prev_month_date.strftime('%B %Y')}:\n"
+                        f"📊 Средневзвешенный курс за {prev_month.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
-                        f"▪️ Последний курс месяца: {stats['last_rate']:.4f} ₽"
+                        f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽"
                     )
                     self.send_to_chat(avg_msg)
 
-                    # Аналитика месяца
                     analytics_msg = (
-                        f"📅 Аналитика за {prev_month_date.strftime('%B %Y')}:\n"
+                        f"📅 Аналитика за {prev_month.strftime('%B %Y')}:\n"
                         f"🟢 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
                         f"🔴 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
-                        f"⚠️ Размах курса: {stats['range']:.4f} ₽\n"
-                        f"🎯 Тренд месяца: {stats['trend']}"
+                        f"🔵 Размах курса: {stats['range']:.4f} ₽\n"
+                        f"〽️ Тренд месяца: {stats['trend']}"
                     )
                     self.send_to_chat(analytics_msg)
 
@@ -224,7 +217,7 @@ class CurrencyService:
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка отчета: {str(e)}")
+            logger.error(f"Ошибка при формировании отчета: {str(e)}")
             return False
 
 currency_service = CurrencyService()
@@ -232,8 +225,8 @@ currency_service = CurrencyService()
 def run_scheduler():
     """Планировщик задач"""
     schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
-    schedule.every(55).minutes.do(lambda: logger.info("Self-ping to keep alive"))
-    
+    schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
+
     currency_service.send_daily_report()  # Первый запуск сразу
 
     while True:
