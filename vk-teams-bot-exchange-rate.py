@@ -111,7 +111,7 @@ class CurrencyService:
         return f"({percent:+.2f}%)"
 
     def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Подсчёт статистики за месяц, включая средневзвешенный курс с учетом всех дней"""
+        """Подсчёт статистики за месяц с учетом всех календарных дней"""
         if year < MIN_YEAR:
             return None
 
@@ -120,7 +120,7 @@ class CurrencyService:
         workday_rates: List[float] = []
         last_valid_rate = None
 
-        # Получаем курс за последний день предыдущего месяца для заполнения начальных выходных
+        # Получаем курс за последний день предыдущего месяца
         if month > 1:
             prev_month = month - 1
             prev_year = year
@@ -131,6 +131,7 @@ class CurrencyService:
         prev_month_last_day = calendar.monthrange(prev_year, prev_month)[1]
         last_valid_rate = self.get_rate(datetime(prev_year, prev_month, prev_month_last_day))
 
+        # Заполняем курсы для всех дней месяца
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
             rate = self.get_rate(date)
@@ -141,12 +142,16 @@ class CurrencyService:
                 all_rates.append(rate)
             elif last_valid_rate is not None:
                 all_rates.append(last_valid_rate)
+            else:
+                continue  # Пропускаем дни в начале месяца, если нет данных
 
         if not all_rates:
             return None
 
-        # Рассчитываем статистику
+        # Рассчитываем средневзвешенный курс по всем календарным дням
         avg_all_days = round(sum(all_rates) / len(all_rates), 4)
+        
+        # Рассчитываем средний курс только по рабочим дням
         avg_workdays = round(sum(workday_rates) / len(workday_rates), 4) if workday_rates else None
 
         return {
@@ -156,7 +161,7 @@ class CurrencyService:
             "min_rate": min(all_rates),
             "max_rate": max(all_rates),
             "range": round(max(all_rates) - min(all_rates), 4),
-            "days_count": len(all_rates),
+            "days_count": len(all_rates),  # Всегда равно количеству дней в месяце
             "workdays_count": len(workday_rates),
             "trend": self.calculate_trend(all_rates)
         }
@@ -211,15 +216,18 @@ class CurrencyService:
                 prev_month_date = today.replace(day=1) - timedelta(days=1)
                 stats = self.calculate_monthly_stats(prev_month_date.year, prev_month_date.month)
                 if stats:
-                    # Отчет по курсу Bidease
+                    # Определяем следующий месяц для Bidease
+                    next_month_date = today.replace(day=1)
+                    
+                    # Отчет по курсу Bidease (на следующий месяц)
                     bidease_msg = (
-                        f"🔮 Курс Bidease на {prev_month_date.strftime('%B %Y')}:\n"
+                        f"🔮 Прогноз курса Bidease на {next_month_date.strftime('%B %Y')}:\n"
                         f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
                         f"🔸 На основе: {stats['last_rate']:.4f} ₽ × 1.06"
                     )
                     self.send_to_chat(bidease_msg)
 
-                    # Отчет по средневзвешенному курсу (обновленный формат)
+                    # Отчет по средневзвешенному курсу
                     avg_msg = (
                         f"📢 Средневзвешенный курс за {prev_month_date.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
