@@ -7,7 +7,7 @@ import os
 import time
 import schedule
 import calendar
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from functools import lru_cache
 
 app = Flask(__name__)
@@ -75,6 +75,48 @@ class CurrencyService:
                 return rate
         return None
 
+    def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
+        """Подсчёт статистики за месяц с заполнением пропущенных дней"""
+        if year < MIN_YEAR:
+            return None
+            
+        last_day = calendar.monthrange(year, month)[1]
+        rates = []
+        
+        for day in range(1, last_day + 1):
+            date = datetime(year, month, day)
+            rate = self.get_rate(date)
+            if rate is None:
+                # Если курс за день отсутствует, используем курс предыдущего рабочего дня
+                rate = self.get_previous_workday_rate(date)
+                if rate is not None:
+                    logger.info(f"Заполнение курса за {date.strftime('%d.%m.%Y')} курсом с предыдущего рабочего дня: {rate}")
+            if rate is not None:
+                rates.append(rate)
+        
+        if not rates:
+            return None
+            
+        return {
+            "last_rate": rates[-1],
+            "avg_rate": round(sum(rates) / len(rates), 4),
+            "min_rate": min(rates),
+            "max_rate": max(rates),
+            "range": round(max(rates) - min(rates), 4),
+            "days_count": len(rates),
+            "trend": self.calculate_trend(rates)
+        }
+
+    def calculate_trend(self, rates: list) -> str:
+        """Определение тренда"""
+        if not rates:
+            return "нет данных"
+        if rates[-1] > rates[0]:
+            return "📈 Рост"
+        elif rates[-1] < rates[0]:
+            return "📉 Падение"
+        return "⏸️ Стабильность"
+
     def send_to_chat(self, text: str) -> bool:
         """Отправка сообщения в чат"""
         try:
@@ -107,49 +149,6 @@ class CurrencyService:
             return ""
         percent = (change / prev_rate) * 100
         return f"({percent:+.2f}%)"
-
-    def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Подсчёт статистики за месяц, включая средневзвешенный курс"""
-        if year < MIN_YEAR:
-            return None
-
-        last_day = calendar.monthrange(year, month)[1]
-        rates = []
-        days_count = 0
-
-        for day in range(1, last_day + 1):
-            date = datetime(year, month, day)
-            rate = self.get_rate(date)
-            if rate is not None:
-                rates.append(rate)
-                days_count += 1
-
-        if not rates:
-            return None
-
-        # Рассчитываем средневзвешенный курс
-        weighted_sum = sum(rates)
-        weighted_average = round(weighted_sum / days_count, 4)
-
-        return {
-            "last_rate": rates[-1],
-            "avg_rate": weighted_average,  # Средневзвешенный курс
-            "min_rate": min(rates),
-            "max_rate": max(rates),
-            "range": round(max(rates) - min(rates), 4),
-            "days_count": days_count,
-            "trend": self.calculate_trend(rates)
-        }
-
-    def calculate_trend(self, rates: list) -> str:
-        """Определение тренда"""
-        if not rates:
-            return "нет данных"
-        if rates[-1] > rates[0]:
-            return "📈 Рост"
-        elif rates[-1] < rates[0]:
-            return "📉 Падение"
-        return "⏸️ Стабильность"
 
     def send_daily_report(self) -> bool:
         """Ежедневный отчет"""
@@ -202,7 +201,7 @@ class CurrencyService:
                     self.send_to_chat(bidease_msg)
 
                     avg_msg = (
-                        f"📊 Средневзвешенный курс за {prev_month.strftime('%B %Y')}:\n"
+                        f"🧮 Средневзвешенный курс за {prev_month.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
                         f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽"
@@ -214,7 +213,7 @@ class CurrencyService:
                         f"🟢 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
                         f"🔴 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
                         f"🔵 Размах курса: {stats['range']:.4f} ₽\n"
-                        f"〽️ Тренд месяца: {stats['trend']}"
+                        f"📊 Тренд месяца: {stats['trend']}"
                     )
                     self.send_to_chat(analytics_msg)
 
@@ -243,36 +242,4 @@ def run_scheduler():
 def home():
     return """
     <h1>Сервис курса USD</h1>
-    <p>Сервис работает. Отчеты отправляются ежедневно в 08:00 МСК.</p>
-    <p>В первый день месяца отправляются дополнительные отчеты.</p>
-    <p><a href="/health">Проверить статус</a></p>
-    <p><a href="/ping">Проверить активность</a></p>
-    """
-
-@app.route('/health')
-def health_check():
-    return jsonify({
-        "status": "running",
-        "start_time": currency_service.start_time.isoformat(),
-        "last_successful_send": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None,
-        "last_rate": currency_service.last_rate,
-        "next_run": str(schedule.next_run()),
-        "min_year": MIN_YEAR,
-        "cache_size": len(currency_service.rate_cache)
-    })
-
-@app.route('/ping')
-def ping():
-    """Эндпоинт для внешнего пинга"""
-    logger.info("Received ping request")
-    return jsonify({
-        "status": "alive",
-        "time": datetime.now().isoformat(),
-        "last_report": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None
-    })
-
-# Запуск планировщика в фоне
-threading.Thread(target=run_scheduler, daemon=True).start()
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    <p>Сервис работает.
