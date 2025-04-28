@@ -7,7 +7,7 @@ import os
 import time
 import schedule
 import calendar
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict
 from functools import lru_cache
 
 app = Flask(__name__)
@@ -109,29 +109,35 @@ class CurrencyService:
         return f"({percent:+.2f}%)"
 
     def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Подсчёт статистики за месяц"""
+        """Подсчёт статистики за месяц, включая средневзвешенный курс"""
         if year < MIN_YEAR:
             return None
-            
+
         last_day = calendar.monthrange(year, month)[1]
         rates = []
-        
+        days_count = 0
+
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
             rate = self.get_rate(date)
             if rate is not None:
                 rates.append(rate)
-        
+                days_count += 1
+
         if not rates:
             return None
-            
+
+        # Рассчитываем средневзвешенный курс
+        weighted_sum = sum(rates)
+        weighted_average = round(weighted_sum / days_count, 4)
+
         return {
             "last_rate": rates[-1],
-            "avg_rate": round(sum(rates) / len(rates), 4),
+            "avg_rate": weighted_average,  # Средневзвешенный курс
             "min_rate": min(rates),
             "max_rate": max(rates),
             "range": round(max(rates) - min(rates), 4),
-            "days_count": len(rates),
+            "days_count": days_count,
             "trend": self.calculate_trend(rates)
         }
 
