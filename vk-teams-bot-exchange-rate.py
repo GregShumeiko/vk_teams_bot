@@ -7,7 +7,7 @@ import os
 import time
 import schedule
 import calendar
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from functools import lru_cache
 
 app = Flask(__name__)
@@ -38,6 +38,7 @@ class CurrencyService:
         self.start_time = datetime.now()
         self.http_client = httpx.Client(timeout=30.0)
         self.rate_cache: Dict[datetime.date, float] = {}
+        self.last_known_rate: Optional[float] = None
 
     def __del__(self):
         self.http_client.close()
@@ -60,6 +61,7 @@ class CurrencyService:
             if response.status_code == 200:
                 rate = round(response.json()["Valute"]["USD"]["Value"], 4)
                 self.rate_cache[date.date()] = rate
+                self.last_known_rate = rate
                 return rate
             return None
         except Exception as e:
@@ -109,36 +111,54 @@ class CurrencyService:
         return f"({percent:+.2f}%)"
 
     def calculate_monthly_stats(self, year: int, month: int) -> Optional[Dict]:
-        """Подсчёт статистики за месяц, включая средневзвешенный курс"""
+        """Подсчёт статистики за месяц, включая средневзвешенный курс с учетом всех дней"""
         if year < MIN_YEAR:
             return None
 
         last_day = calendar.monthrange(year, month)[1]
-        rates = []
-        days_count = 0
+        all_rates: List[float] = []
+        workday_rates: List[float] = []
+        last_valid_rate = None
+
+        # Получаем курс за последний день предыдущего месяца для заполнения начальных выходных
+        if month > 1:
+            prev_month = month - 1
+            prev_year = year
+        else:
+            prev_month = 12
+            prev_year = year - 1
+
+        prev_month_last_day = calendar.monthrange(prev_year, prev_month)[1]
+        last_valid_rate = self.get_rate(datetime(prev_year, prev_month, prev_month_last_day))
 
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
             rate = self.get_rate(date)
+            
             if rate is not None:
-                rates.append(rate)
-                days_count += 1
+                last_valid_rate = rate
+                workday_rates.append(rate)
+                all_rates.append(rate)
+            elif last_valid_rate is not None:
+                all_rates.append(last_valid_rate)
 
-        if not rates:
+        if not all_rates:
             return None
 
-        # Рассчитываем средневзвешенный курс
-        weighted_sum = sum(rates)
-        weighted_average = round(weighted_sum / days_count, 4)
+        # Рассчитываем статистику
+        avg_all_days = round(sum(all_rates) / len(all_rates), 4)
+        avg_workdays = round(sum(workday_rates) / len(workday_rates), 4) if workday_rates else None
 
         return {
-            "last_rate": rates[-1],
-            "avg_rate": weighted_average,  # Средневзвешенный курс
-            "min_rate": min(rates),
-            "max_rate": max(rates),
-            "range": round(max(rates) - min(rates), 4),
-            "days_count": days_count,
-            "trend": self.calculate_trend(rates)
+            "last_rate": all_rates[-1],
+            "avg_rate": avg_all_days,
+            "avg_workdays_rate": avg_workdays,
+            "min_rate": min(all_rates),
+            "max_rate": max(all_rates),
+            "range": round(max(all_rates) - min(all_rates), 4),
+            "days_count": len(all_rates),
+            "workdays_count": len(workday_rates),
+            "trend": self.calculate_trend(all_rates)
         }
 
     def calculate_trend(self, rates: list) -> str:
@@ -166,7 +186,6 @@ class CurrencyService:
                 logger.warning("Курс за предыдущий рабочий день не найден, отправка отменена.")
                 return False
 
-            # Новая защита: если курс не изменился — не отправляем
             if current_rate == prev_rate:
                 logger.info("Курс не изменился, сообщение не отправляется.")
                 return False
@@ -175,9 +194,7 @@ class CurrencyService:
             change_percent = self.format_change_percent(change, prev_rate)
 
             date_str = today.strftime("%d.%m.%Y")
-            jump_comment = ""
-            if abs(change) >= 1.0:
-                jump_comment = "\n🚨 Обнаружен большой скачок курса!"
+            jump_comment = "\n🚨 Обнаружен большой скачок курса!" if abs(change) >= 1.0 else ""
 
             message = (
                 f"💵 Курс USD на {date_str}:\n"
@@ -191,30 +208,33 @@ class CurrencyService:
             # Дополнительные отчеты 1-го числа месяца
             if today.day == 1:
                 logger.info("Отправка дополнительных отчетов за предыдущий месяц")
-                prev_month = today.replace(day=1) - timedelta(days=1)
-                stats = self.calculate_monthly_stats(prev_month.year, prev_month.month)
+                prev_month_date = today.replace(day=1) - timedelta(days=1)
+                stats = self.calculate_monthly_stats(prev_month_date.year, prev_month_date.month)
                 if stats:
+                    # Отчет по курсу Bidease
                     bidease_msg = (
-                        f"🔮 Курс Bidease на {today.strftime('%B %Y')}:\n"
+                        f"🔮 Курс Bidease на {prev_month_date.strftime('%B %Y')}:\n"
                         f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
                         f"🔸 На основе: {stats['last_rate']:.4f} ₽ × 1.06"
                     )
                     self.send_to_chat(bidease_msg)
 
+                    # Отчет по средневзвешенному курсу (обновленный формат)
                     avg_msg = (
-                        f"📊 Средневзвешенный курс за {prev_month.strftime('%B %Y')}:\n"
+                        f"📢 Средневзвешенный курс за {prev_month_date.strftime('%B %Y')}:\n"
                         f"🔹 {stats['avg_rate']:.4f} ₽\n"
                         f"🔸 Дней в расчете: {stats['days_count']}\n"
                         f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽"
                     )
                     self.send_to_chat(avg_msg)
 
+                    # Аналитический отчет
                     analytics_msg = (
-                        f"📅 Аналитика за {prev_month.strftime('%B %Y')}:\n"
+                        f"📅 Аналитика за {prev_month_date.strftime('%B %Y')}:\n"
                         f"🟢 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
                         f"🔴 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
                         f"🔵 Размах курса: {stats['range']:.4f} ₽\n"
-                        f"〽️ Тренд месяца: {stats['trend']}"
+                        f"📊 Тренд: {stats['trend']}\n"}"
                     )
                     self.send_to_chat(analytics_msg)
 
