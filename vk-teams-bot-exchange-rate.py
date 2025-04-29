@@ -258,7 +258,7 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     """Планировщик задач"""
-    schedule.every().day.at("05:00").do(currency_service.send_daily_report)  # 08:00 МСК
+    schedule.every().day.at("06:50").do(currency_service.send_daily_report)  # 08:00 МСК
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
 
     currency_service.send_daily_report()  # Первый запуск сразу
