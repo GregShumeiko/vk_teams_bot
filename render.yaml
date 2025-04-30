@@ -3,4 +3,4 @@ services:
     name: vk-teams-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python test-vk-teams-bot-exchange-rate.py
+    startCommand: python vk-teams-bot-exchange-rate.py
