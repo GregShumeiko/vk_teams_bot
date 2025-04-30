@@ -215,7 +215,7 @@ class CurrencyService:
                     analytics_msg = (
                         f"📅 Аналитика за {today.strftime('%B %Y')}:\n"
                         f"🔻 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
-                        f"🔻 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
+                        f"🔺 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
                         f"▪️ Размах курса: {stats['range']:.4f} ₽\n"
                         f"📊 Тренд: {stats['trend']}\n"
                     )
@@ -233,7 +233,7 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     # Ежедневный отчёт в 08:00 (можно изменить при необходимости)
-    schedule.every().day.at("11:15").do(currency_service.send_daily_report)
+    schedule.every().day.at("11:20").do(currency_service.send_daily_report)
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
 
     while True:
