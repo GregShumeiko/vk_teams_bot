@@ -231,7 +231,7 @@ class CurrencyService:
 
 def run_scheduler():
     currency_service.rate_cache.clear()
-    schedule.every().day.at("10:22").do(currency_service.send_daily_report)
+    schedule.every().day.at("10:25").do(currency_service.send_daily_report)
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
     while True:
         schedule.run_pending()
