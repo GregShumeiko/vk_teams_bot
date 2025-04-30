@@ -229,15 +229,14 @@ class CurrencyService:
             logger.error(f"Ошибка при формировании отчета: {str(e)}")
             return False
 
+currency_service = CurrencyService()
+
 def run_scheduler():
-    currency_service.rate_cache.clear()
-    schedule.every().day.at("10:25").do(currency_service.send_daily_report)
+    schedule.every().day.at("10:52").do(currency_service.send_daily_report)
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
     while True:
         schedule.run_pending()
         time.sleep(60)
-
-currency_service = CurrencyService()
 
 @app.route('/')
 def home():
