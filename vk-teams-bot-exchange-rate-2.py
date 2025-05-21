@@ -255,7 +255,7 @@ currency_service = CurrencyService()
 
 def run_scheduler():
     schedule.every().day.at("07:30").do(currency_service.send_daily_report)
-    schedule.every().day.at("07:00").do(currency_service.retry_failed_message)  # 👈 добавлено
+    schedule.every().day.at("07:40").do(currency_service.retry_failed_message)  # 👈 добавлено
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
     while True:
         schedule.run_pending()
