@@ -76,10 +76,23 @@ class CurrencyService:
         return None
 
     def get_last_available_rate(self, date: datetime) -> Optional[float]:
-        """Получает последний доступный курс на указанную дату"""
-        for delta in range(0, 7):  # Проверяем саму дату и 6 предыдущих дней
-            test_date = date - timedelta(days=delta)
-            rate = self.get_rate(test_date)
+        """Получает последний доступный курс на указанную дату с учетом публикации ЦБ"""
+        # Проверяем саму дату
+        rate = self.get_rate(date)
+        if rate is not None:
+            return rate
+        
+        # Для воскресенья проверяем субботу (ЦБ публикует курс на субботу)
+        if date.weekday() == 6:  # 6 = воскресенье
+            saturday = date - timedelta(days=1)
+            saturday_rate = self.get_rate(saturday)
+            if saturday_rate is not None:
+                return saturday_rate
+        
+        # Для других дней проверяем предыдущие дни (максимум 7 дней назад)
+        for delta in range(1, 8):
+            prev_date = date - timedelta(days=delta)
+            rate = self.get_rate(prev_date)
             if rate is not None:
                 return rate
         return None
@@ -149,7 +162,7 @@ class CurrencyService:
         if not all_rates:
             return None
 
-        # Для выходных используем последний известный курс
+        # Получаем последний доступный курс месяца
         last_available_rate = self.get_last_available_rate(datetime(year, month, last_day))
         if last_available_rate is None:
             last_available_rate = all_rates[-1]
@@ -158,7 +171,7 @@ class CurrencyService:
         avg_workdays = round(sum(workday_rates) / len(workday_rates), 4) if workday_rates else None
 
         return {
-            "last_rate": last_available_rate,  # Используем последний доступный курс
+            "last_rate": last_available_rate,
             "avg_rate": avg_all_days,
             "avg_workdays_rate": avg_workdays,
             "min_rate": min(all_rates),
@@ -171,12 +184,26 @@ class CurrencyService:
         }
 
     def get_last_available_date(self, year: int, month: int) -> datetime:
-        """Возвращает дату последнего доступного курса в месяце"""
+        """Возвращает дату последнего доступного курса в месяце с учетом публикации ЦБ"""
         last_day = calendar.monthrange(year, month)[1]
-        for day in range(last_day, 0, -1):
+        
+        # Проверяем последний день месяца
+        last_date = datetime(year, month, last_day)
+        if self.get_rate(last_date) is not None:
+            return last_date
+        
+        # Для воскресенья проверяем субботу
+        if last_date.weekday() == 6:  # 6 = воскресенье
+            saturday = last_date - timedelta(days=1)
+            if self.get_rate(saturday) is not None:
+                return saturday
+        
+        # Ищем последний день с курсом
+        for day in range(last_day - 1, 0, -1):
             date = datetime(year, month, day)
             if self.get_rate(date) is not None:
                 return date
+        
         return datetime(year, month, last_day)
 
     def calculate_trend(self, rates: list) -> str:
@@ -225,7 +252,7 @@ class CurrencyService:
             bidease_msg = (
                 f"🔮 Курс Bidease на {month_name}:\n"
                 f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
-                f"🔸 На основе: {stats['last_rate']:.4f} ₽ (последний доступный курс от {last_date_str}) × 1.06"
+                f"🔸 На основе: {stats['last_rate']:.4f} ₽ (курс ЦБ на {last_date_str}) × 1.06"
             )
             self.send_to_chat(bidease_msg)
 
@@ -234,7 +261,7 @@ class CurrencyService:
                 f"📢 Средневзвешенный курс за {month_name}:\n"
                 f"🔹 {stats['avg_rate']:.4f} ₽\n"
                 f"🔸 Дней в расчете: {stats['days_count']}\n"
-                f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽ (от {last_date_str})"
+                f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽ (курс ЦБ на {last_date_str})"
             )
             self.send_to_chat(avg_msg)
 
@@ -287,7 +314,7 @@ class CurrencyService:
             if self.is_last_day_of_month(today):
                 last_available_date = self.get_last_available_date(today.year, today.month)
                 if last_available_date != today:
-                    date_info = f" (последний доступный курс от {last_available_date.strftime('%d.%m.%Y')})"
+                    date_info = f" (курс ЦБ на {last_available_date.strftime('%d.%m.%Y')})"
                 else:
                     date_info = ""
                 
