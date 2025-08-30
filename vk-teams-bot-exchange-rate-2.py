@@ -39,6 +39,7 @@ class CurrencyService:
         self.http_client = httpx.Client(timeout=30.0)
         self.rate_cache: Dict[datetime.date, float] = {}
         self.last_known_rate: Optional[float] = None
+        self.last_monthly_report: Optional[datetime] = None
 
     def __del__(self):
         self.http_client.close()
@@ -70,6 +71,15 @@ class CurrencyService:
         for delta in range(1, 8):
             prev_date = date - timedelta(days=delta)
             rate = self.get_rate(prev_date)
+            if rate is not None:
+                return rate
+        return None
+
+    def get_last_available_rate(self, date: datetime) -> Optional[float]:
+        """Получает последний доступный курс на указанную дату"""
+        for delta in range(0, 7):  # Проверяем саму дату и 6 предыдущих дней
+            test_date = date - timedelta(days=delta)
+            rate = self.get_rate(test_date)
             if rate is not None:
                 return rate
         return None
@@ -113,6 +123,7 @@ class CurrencyService:
         workday_rates: List[float] = []
         last_valid_rate = None
 
+        # Получаем курс за последний день предыдущего месяца
         if month > 1:
             prev_month = month - 1
             prev_year = year
@@ -123,6 +134,7 @@ class CurrencyService:
         prev_month_last_day = calendar.monthrange(prev_year, prev_month)[1]
         last_valid_rate = self.get_rate(datetime(prev_year, prev_month, prev_month_last_day))
 
+        # Собираем все курсы за месяц
         for day in range(1, last_day + 1):
             date = datetime(year, month, day)
             rate = self.get_rate(date)
@@ -137,11 +149,16 @@ class CurrencyService:
         if not all_rates:
             return None
 
+        # Для выходных используем последний известный курс
+        last_available_rate = self.get_last_available_rate(datetime(year, month, last_day))
+        if last_available_rate is None:
+            last_available_rate = all_rates[-1]
+
         avg_all_days = round(sum(all_rates) / len(all_rates), 4)
         avg_workdays = round(sum(workday_rates) / len(workday_rates), 4) if workday_rates else None
 
         return {
-            "last_rate": all_rates[-1],
+            "last_rate": last_available_rate,  # Используем последний доступный курс
             "avg_rate": avg_all_days,
             "avg_workdays_rate": avg_workdays,
             "min_rate": min(all_rates),
@@ -149,8 +166,18 @@ class CurrencyService:
             "range": round(max(all_rates) - min(all_rates), 4),
             "days_count": len(all_rates),
             "workdays_count": len(workday_rates),
-            "trend": self.calculate_trend(all_rates)
+            "trend": self.calculate_trend(all_rates),
+            "last_available_date": self.get_last_available_date(year, month)
         }
+
+    def get_last_available_date(self, year: int, month: int) -> datetime:
+        """Возвращает дату последнего доступного курса в месяце"""
+        last_day = calendar.monthrange(year, month)[1]
+        for day in range(last_day, 0, -1):
+            date = datetime(year, month, day)
+            if self.get_rate(date) is not None:
+                return date
+        return datetime(year, month, last_day)
 
     def calculate_trend(self, rates: list) -> str:
         if not rates:
@@ -161,7 +188,7 @@ class CurrencyService:
             return "📉 Падение"
         return "⏸️ Стабильность"
 
-    def retry_failed_message(self):  # 👈 добавлено
+    def retry_failed_message(self):
         try:
             if os.path.exists("last_failed_message.txt"):
                 with open("last_failed_message.txt", "r", encoding="utf-8") as f:
@@ -178,17 +205,76 @@ class CurrencyService:
             logger.error(f"Ошибка при повторной отправке: {str(e)}")
             return False
 
+    def is_last_day_of_month(self, date: datetime) -> bool:
+        """Проверяет, является ли дата последним днем месяца"""
+        last_day = calendar.monthrange(date.year, date.month)[1]
+        return date.day == last_day
+
+    def send_monthly_reports(self, year: int, month: int):
+        """Отправляет все месячные отчеты"""
+        stats = self.calculate_monthly_stats(year, month)
+        if not stats:
+            logger.warning(f"Не удалось получить статистику за {month}/{year}")
+            return False
+
+        try:
+            month_name = datetime(year, month, 1).strftime('%B %Y')
+            last_date_str = stats["last_available_date"].strftime('%d.%m.%Y')
+            
+            # Отчет для Bidease
+            bidease_msg = (
+                f"🔮 Курс Bidease на {month_name}:\n"
+                f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
+                f"🔸 На основе: {stats['last_rate']:.4f} ₽ (последний доступный курс от {last_date_str}) × 1.06"
+            )
+            self.send_to_chat(bidease_msg)
+
+            # Средневзвешенный курс
+            avg_msg = (
+                f"📢 Средневзвешенный курс за {month_name}:\n"
+                f"🔹 {stats['avg_rate']:.4f} ₽\n"
+                f"🔸 Дней в расчете: {stats['days_count']}\n"
+                f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽ (от {last_date_str})"
+            )
+            self.send_to_chat(avg_msg)
+
+            # Аналитика
+            analytics_msg = (
+                f"📅 Аналитика за {month_name}:\n"
+                f"🔻 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
+                f"🔺 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
+                f"▪️ Размах курса: {stats['range']:.4f} ₽\n"
+                f"📊 Тренд: {stats['trend']}\n"
+            )
+            self.send_to_chat(analytics_msg)
+
+            self.last_monthly_report = datetime.now()
+            logger.info(f"Месячные отчеты за {month_name} отправлены успешно")
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка при отправке месячных отчетов: {str(e)}")
+            return False
+
     def send_daily_report(self) -> bool:
         try:
             today = datetime.now()
             current_rate = self.get_rate(today)
             prev_rate = self.get_previous_workday_rate(today)
 
+            # Для последнего дня месяца используем последний доступный курс
+            if self.is_last_day_of_month(today) and current_rate is None:
+                current_rate = self.get_last_available_rate(today)
+                logger.info(f"Используем последний доступный курс для последнего дня месяца: {current_rate}")
+
             if current_rate is None or prev_rate is None:
                 logger.warning("Данные курса отсутствуют.")
+                # Сохраняем сообщение об ошибке для повторной отправки
+                with open("last_failed_message.txt", "w", encoding="utf-8") as f:
+                    f.write("⚠️ Не удалось получить данные о курсе USD для ежедневного отчета.")
                 return False
 
-            if current_rate == prev_rate:
+            if current_rate == prev_rate and not self.is_last_day_of_month(today):
                 logger.info("Курс не изменился, сообщение не отправляется.")
                 return False
 
@@ -197,51 +283,40 @@ class CurrencyService:
             date_str = today.strftime("%d.%m.%Y")
             jump_comment = "\n🚨 Обнаружен большой скачок курса!" if abs(change) >= 1.0 else ""
 
-            message = (
-                f"💵 Курс USD на {date_str}:\n"
-                f"🔹 {current_rate:.4f} ₽\n"
-                f"🔸 Изменение: {self.format_change(change)} {change_percent}"
-                f"{jump_comment}"
-            )
+            # Специальное сообщение для последнего дня месяца
+            if self.is_last_day_of_month(today):
+                last_available_date = self.get_last_available_date(today.year, today.month)
+                if last_available_date != today:
+                    date_info = f" (последний доступный курс от {last_available_date.strftime('%d.%m.%Y')})"
+                else:
+                    date_info = ""
+                
+                message = (
+                    f"📅 КУРС НА КОНЕЦ МЕСЯЦА - {date_str}{date_info}:\n"
+                    f"🔹 {current_rate:.4f} ₽\n"
+                    f"🔸 Изменение: {self.format_change(change)} {change_percent}"
+                    f"{jump_comment}"
+                )
+            else:
+                message = (
+                    f"💵 Курс USD на {date_str}:\n"
+                    f"🔹 {current_rate:.4f} ₽\n"
+                    f"🔸 Изменение: {self.format_change(change)} {change_percent}"
+                    f"{jump_comment}"
+                )
 
             success = self.send_to_chat(message)
-            if not success:  # 👈 добавлено
+            if not success:
                 logger.error("Первичная отправка курса не удалась.")
                 self.send_to_chat("⚠️ Не удалось отправить отчет о курсе USD. Повторная попытка будет в 10:00 МСК.")
                 with open("last_failed_message.txt", "w", encoding="utf-8") as f:
                     f.write(message)
                 return False
 
-            last_day_of_month = calendar.monthrange(today.year, today.month)[1]
-            if today.day == last_day_of_month:
-                logger.info("Отправка дополнительных отчетов за месяц")
-                stats = self.calculate_monthly_stats(today.year, today.month)
-                if stats:
-                    next_month_date = (today + timedelta(days=1)).replace(day=1)
-
-                    bidease_msg = (
-                        f"🔮 Курс Bidease на {next_month_date.strftime('%B %Y')}:\n"
-                        f"🔹 {round(stats['last_rate'] * 1.06, 4):.4f} ₽\n"
-                        f"🔸 На основе: {stats['last_rate']:.4f} ₽ × 1.06"
-                    )
-                    self.send_to_chat(bidease_msg)
-
-                    avg_msg = (
-                        f"📢 Средневзвешенный курс за {today.strftime('%B %Y')}:\n"
-                        f"🔹 {stats['avg_rate']:.4f} ₽\n"
-                        f"🔸 Дней в расчете: {stats['days_count']}\n"
-                        f"💰 Последний курс месяца: {stats['last_rate']:.4f} ₽"
-                    )
-                    self.send_to_chat(avg_msg)
-
-                    analytics_msg = (
-                        f"📅 Аналитика за {today.strftime('%B %Y')}:\n"
-                        f"🔻 Минимальный курс: {stats['min_rate']:.4f} ₽\n"
-                        f"🔺 Максимальный курс: {stats['max_rate']:.4f} ₽\n"
-                        f"▪️ Размах курса: {stats['range']:.4f} ₽\n"
-                        f"📊 Тренд: {stats['trend']}\n"
-                    )
-                    self.send_to_chat(analytics_msg)
+            # Отправляем месячные отчеты в последний день месяца
+            if self.is_last_day_of_month(today):
+                logger.info(f"Отправка месячных отчетов за {today.month}/{today.year}")
+                self.send_monthly_reports(today.year, today.month)
 
             self.last_successful_send = datetime.now()
             self.last_rate = current_rate
@@ -254,9 +329,10 @@ class CurrencyService:
 currency_service = CurrencyService()
 
 def run_scheduler():
-    schedule.every().day.at("05:00").do(currency_service.send_daily_report)
-    schedule.every().day.at("07:30").do(currency_service.retry_failed_message)  # 👈 добавлено
+    schedule.every().day.at("08:00").do(currency_service.send_daily_report)  # Основной отчет
+    schedule.every().day.at("10:00").do(currency_service.retry_failed_message)  # Повторная отправка
     schedule.every(55).minutes.do(lambda: logger.info("Self-ping для поддержания активности"))
+    
     while True:
         schedule.run_pending()
         time.sleep(60)
@@ -266,7 +342,7 @@ def home():
     return """
     <h1>Сервис курса USD</h1>
     <p>Сервис работает. Отчеты отправляются ежедневно в 08:00 МСК.</p>
-    <p>В последний день месяца отправляются дополнительные отчеты.</p>
+    <p>В последний день месяца отправляются дополнительные месячные отчеты.</p>
     <p><a href="/health">Проверить статус</a></p>
     <p><a href="/ping">Проверить активность</a></p>
     """
@@ -277,6 +353,7 @@ def health_check():
         "status": "running",
         "start_time": currency_service.start_time.isoformat(),
         "last_successful_send": currency_service.last_successful_send.isoformat() if currency_service.last_successful_send else None,
+        "last_monthly_report": currency_service.last_monthly_report.isoformat() if currency_service.last_monthly_report else None,
         "last_rate": currency_service.last_rate,
         "next_run": str(schedule.next_run()),
         "min_year": MIN_YEAR,
